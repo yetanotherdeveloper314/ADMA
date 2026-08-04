@@ -1,0 +1,10 @@
+services:
+  adma:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./models:/app/models:ro
+      - ./examples:/app/examples:ro
+    environment:
+      - GRADIO_SERVER_NAME=0.0.0.0

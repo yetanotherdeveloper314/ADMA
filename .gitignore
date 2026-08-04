@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+
+# Virtual environments
+.venv/
+
+
+# Environment variables
+.env
+
+# OS files
+.DS_Store
+
+# IDE / Editor
+.vscode/
+.idea/
+
+
+# Dataset images and labels
+data/*
+
+# Model weights 
+*.pt
+*.pth
+*.onnx
+*.torchscript
+*.tflite
+*.pb
+*.engine
+
+# Training runs / outputs
+runs/
+models/
+
+# Gradio
+flagged/
