@@ -1,6 +1,6 @@
 # Autonomous Detection of Military Assets
 
-**ADMA (Autonomous Detection of Military Assets)** detects and classifies military assets — tanks, fighter jets, drones, helicopters, warships, missiles, and more — in any image using YOLOv8 object detection and a [Gradio](https://www.gradio.app/) web interface.
+**ADMA (Autonomous Detection of Military Assets)** detects and classifies military assets such as tanks, armored cars, etc. in any image using YOLOv8 object detection.
 
 ---
 
