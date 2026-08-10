@@ -39,10 +39,11 @@ USAGE
     evaluator.save_csv(report, "evaluation.csv")
 """
 
-from collections import defaultdict
 import csv
 import json
 import os
+from collections import defaultdict
+
 import cv2
 import numpy as np
 import yaml
@@ -88,7 +89,7 @@ def load_class_names(data_yaml_path):
           0: armored_vehicle
           1: drone
     """
-    with open(data_yaml_path, "r") as f:
+    with open(data_yaml_path) as f:
         data = yaml.safe_load(f)
 
     names = data["names"]
@@ -136,7 +137,7 @@ def load_yolo(labels_dir, images_dir, is_prediction=False):
             continue
         H, W = img.shape[:2]
 
-        with open(os.path.join(labels_dir, fname), "r") as f:
+        with open(os.path.join(labels_dir, fname)) as f:
             for line in f:
                 parts = line.strip().split()
                 if not parts:
