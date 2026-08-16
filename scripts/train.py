@@ -276,7 +276,9 @@ def train(
 
     print()
     print("  Next steps:")
-    print(f"    python scripts/evaluator.py --data {data_yaml} --gt-images ... --gt-labels ... --pred-labels ...")
+    print(
+        f"    python scripts/evaluator.py --data {data_yaml} --gt-images ... --gt-labels ... --pred-labels ..."
+    )
     print(f"    python scripts/test_detection.py --image YOUR_IMAGE.jpg --model {output_name}")
     print(f"    python -m adma.app   (select '{output_name}' from the dropdown)")
     print("=" * 60)
