@@ -1,0 +1,15 @@
+,armored_vehicle,drone,fighter_jet,military_aircraft,military_helicopter,military_truck,military_vehicle,missile,missile_launcher,stealth_aircraft,tank,warship,weapons,background
+armored_vehicle,236,0,1,2,1,12,40,0,0,0,2,1,0,52
+drone,0,55,3,9,1,0,2,0,0,1,0,0,0,19
+fighter_jet,1,3,69,7,1,0,0,0,0,0,0,0,0,4
+military_aircraft,0,2,11,91,4,0,0,0,0,0,0,0,0,21
+military_helicopter,0,0,0,3,71,0,1,0,0,0,0,0,0,16
+military_truck,1,0,0,0,0,30,7,0,0,0,0,0,0,23
+military_vehicle,22,0,0,0,0,18,710,0,0,0,4,0,0,260
+missile,0,0,0,4,0,1,0,12,0,0,0,1,3,53
+missile_launcher,4,0,0,0,0,1,21,1,1,0,2,0,0,47
+stealth_aircraft,0,0,1,1,0,0,0,0,0,15,0,0,0,2
+tank,9,0,0,1,0,0,14,0,0,0,22,1,0,27
+warship,0,0,0,1,1,0,0,0,0,0,0,49,1,10
+weapons,0,0,0,0,0,0,0,0,0,0,0,0,83,59
+background,60,10,16,46,27,41,376,5,0,7,11,10,172,0

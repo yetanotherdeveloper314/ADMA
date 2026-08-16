@@ -31,12 +31,6 @@ from adma.config import (
     TRAIN_WORKERS,
 )
 from adma.datasets import DATASETS, LABEL_MAP
-from adma.evaluator import (
-    DetectionEvaluator,
-    load_class_names,
-    load_yolo,
-    predictions_from_detector,
-)
 
 COMBINED_DIR = Path(COMBINED_DATA_DIR)
 
@@ -280,13 +274,9 @@ def train(
     print(f"  Model saved to    : {dest.resolve()}")
     print(f"  Training plots at : {run_best.parent.parent.resolve()}")
 
-    # Evaluate the freshly trained (best-checkpoint) model on the
-    # validation split before handing control back to the caller.
-    best_model = YOLO(str(dest))
-    evaluate_model(data_yaml, best_model, output_name, models_dir)
-
     print()
     print("  Next steps:")
+    print(f"    python scripts/evaluator.py --data {data_yaml} --gt-images ... --gt-labels ... --pred-labels ...")
     print(f"    python scripts/test_detection.py --image YOUR_IMAGE.jpg --model {output_name}")
     print(f"    python -m adma.app   (select '{output_name}' from the dropdown)")
     print("=" * 60)
@@ -306,110 +296,6 @@ def _find_best_pt(project: str, name: str) -> Path:
     raise FileNotFoundError(
         f"Could not find best.pt under {project}/{name}. Checked: {[str(c) for c in candidates]}"
     )
-
-
-# ------------------------------------------------------------------
-# Evaluation
-# ------------------------------------------------------------------
-
-
-def _images_dir_to_labels_dir(images_dir: Path) -> Path:
-    """
-    Mirror an images path into its labels path by swapping only the
-    exact 'images' path COMPONENT, not any substring match. A naive
-    str.replace("images", "labels") mangles folder names like
-    'tank_images' into 'tank_labels' -- this only touches segments
-    that are exactly 'images'.
-    """
-    parts = list(images_dir.parts)
-    swapped = ["labels" if p == "images" else p for p in parts]
-    return Path(*swapped)
-
-
-def _resolve_val_dirs(data_yaml_path: Path) -> list[tuple[Path, Path]]:
-    """
-    Return (images_dir, labels_dir) pairs for the validation split
-    described by a data.yaml file. Handles a single-dataset yaml
-    (val: a string) and the combined-dataset yaml produced by
-    _merge_all_datasets (val: a list of paths, one per source dataset,
-    e.g. images/val/tank_images, images/val/military_vehicles, ...).
-    """
-    with open(data_yaml_path) as f:
-        cfg = yaml.safe_load(f)
-
-    base = Path(cfg.get("path", str(data_yaml_path.parent.resolve())))
-    val_entries = cfg["val"] if isinstance(cfg["val"], list) else [cfg["val"]]
-
-    pairs = []
-    for entry in val_entries:
-        images_dir = base / entry
-        labels_dir = _images_dir_to_labels_dir(images_dir)
-        pairs.append((images_dir, labels_dir))
-    return pairs
-
-
-def generate_predictions(
-    model: YOLO, images_dir: Path, class_names: dict[int, str]
-) -> dict[str, list[dict]]:
-    """
-    Run the trained model over every image in images_dir and return
-    detections keyed by image_id (filename stem), in the same shape
-    MilitaryAssetDetector.detect() produces:
-
-        {image_id: [{"class": str, "confidence": float, "bbox": [x1,y1,x2,y2]}, ...]}
-
-    This lets us reuse predictions_from_detector() unchanged, whether
-    the detections came from the Gradio app's detector or straight
-    from a freshly trained checkpoint here.
-    """
-    results = model.predict(source=str(images_dir), verbose=False)
-
-    results_by_image: dict[str, list[dict]] = {}
-    for result in results:
-        image_id = Path(result.path).stem
-        detections = []
-        for box in result.boxes:
-            cls_id = int(box.cls.item())
-            detections.append({
-                "class": class_names.get(cls_id, str(cls_id)),
-                "confidence": float(box.conf.item()),
-                "bbox": [float(v) for v in box.xyxy[0].tolist()],
-            })
-        results_by_image[image_id] = detections
-
-    return results_by_image
-
-
-def evaluate_model(data_yaml: Path, model: YOLO, output_name: str, models_dir: Path) -> None:
-    """Generate predictions on the validation set and report mAP50-95 / P / R / F1."""
-    print()
-    print("=" * 60)
-    print("  EVALUATING ON VALIDATION SET")
-    print("=" * 60)
-
-    class_names = load_class_names(data_yaml)
-    class_name_to_id = {name: cls_id for cls_id, name in class_names.items()}
-
-    ground_truth: list[dict] = []
-    raw_predictions: dict[str, list[dict]] = {}
-
-    for images_dir, labels_dir in _resolve_val_dirs(data_yaml):
-        if not images_dir.exists() or not labels_dir.exists():
-            print(f"  [WARN] skipping missing validation split: {images_dir}")
-            continue
-        ground_truth.extend(load_yolo(str(labels_dir), str(images_dir)))
-        raw_predictions.update(generate_predictions(model, images_dir, class_names))
-
-    predictions = predictions_from_detector(raw_predictions, class_name_to_id)
-
-    evaluator = DetectionEvaluator(ground_truth, predictions, class_names)
-    report = evaluator.evaluate()
-    evaluator.print_report(report)
-
-    evaluator.save_json(report, str(models_dir / "evaluation.json"))
-    evaluator.save_csv(report, str(models_dir / "evaluation.csv"))
-    print(f"  [OK] Evaluation report saved to {models_dir.resolve()}")
-    print("=" * 60)
 
 
 if __name__ == "__main__":
