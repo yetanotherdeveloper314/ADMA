@@ -214,7 +214,12 @@ def load_dataset_split(
         if not images_dir.exists() or not labels_dir.exists():
             continue
         out.extend(
-            load_yolo(str(labels_dir), str(images_dir), dataset_root=dataset_root, is_prediction=is_prediction)
+            load_yolo(
+                str(labels_dir),
+                str(images_dir),
+                dataset_root=dataset_root,
+                is_prediction=is_prediction,
+            )
         )
     return out
 
@@ -292,7 +297,9 @@ def load_yolo(labels_dir, images_dir, dataset_root=None, is_prediction: bool = F
 # Prediction adapter for detector-style output, e.g.
 # {"class": "tank", "confidence": 0.94, "bbox": [x1,y1,x2,y2]}
 # --------------------------------------------------------------------------
-def predictions_from_detector(results, class_name_to_id: dict[str, int] | None = None) -> list[dict]:
+def predictions_from_detector(
+    results, class_name_to_id: dict[str, int] | None = None
+) -> list[dict]:
     """
     Convert a detector's raw output into the evaluator's expected format.
 
@@ -326,20 +333,24 @@ def predictions_from_detector(results, class_name_to_id: dict[str, int] | None =
     if isinstance(results, dict):
         for image_id, dets in results.items():
             for det in dets:
-                out.append({
-                    "image_id": image_id,
+                out.append(
+                    {
+                        "image_id": image_id,
+                        "class_id": _class_id(det["class"]),
+                        "bbox": list(det["bbox"]),
+                        "score": float(det["confidence"]),
+                    }
+                )
+    else:
+        for det in results:
+            out.append(
+                {
+                    "image_id": det["image_id"],
                     "class_id": _class_id(det["class"]),
                     "bbox": list(det["bbox"]),
                     "score": float(det["confidence"]),
-                })
-    else:
-        for det in results:
-            out.append({
-                "image_id": det["image_id"],
-                "class_id": _class_id(det["class"]),
-                "bbox": list(det["bbox"]),
-                "score": float(det["confidence"]),
-            })
+                }
+            )
 
     return out
 
@@ -444,10 +455,9 @@ class DetectionEvaluator:
         self.gt = ground_truths
         self.preds = predictions
         self.class_names = class_names or {}
-        self.classes = sorted(set(
-            [g["class_id"] for g in ground_truths] +
-            [p["class_id"] for p in predictions]
-        ))
+        self.classes = sorted(
+            set([g["class_id"] for g in ground_truths] + [p["class_id"] for p in predictions])
+        )
         self.iou_thresholds = np.round(np.arange(0.50, 1.00, 0.05), 2)  # 0.50..0.95
 
     # ---- matching at a single IoU threshold, single class -------------
@@ -518,10 +528,16 @@ class DetectionEvaluator:
             }
 
         overall = {
-            "mAP50-95": float(np.mean([v["mAP50-95"] for v in per_class.values()])) if per_class else 0.0,
+            "mAP50-95": float(np.mean([v["mAP50-95"] for v in per_class.values()]))
+            if per_class
+            else 0.0,
             "mAP50": float(np.mean([v["AP50"] for v in per_class.values()])) if per_class else 0.0,
-            "Precision": float(np.mean([v["Precision"] for v in per_class.values()])) if per_class else 0.0,
-            "Recall": float(np.mean([v["Recall"] for v in per_class.values()])) if per_class else 0.0,
+            "Precision": float(np.mean([v["Precision"] for v in per_class.values()]))
+            if per_class
+            else 0.0,
+            "Recall": float(np.mean([v["Recall"] for v in per_class.values()]))
+            if per_class
+            else 0.0,
             "F1": float(np.mean([v["F1"] for v in per_class.values()])) if per_class else 0.0,
         }
         return {"per_class": per_class, "overall": overall}
@@ -568,13 +584,15 @@ class DetectionEvaluator:
     def print_confusion_matrix(cm: dict) -> None:
         labels = cm["labels"]
         matrix = cm["matrix"]
-        col_w = max(10, max(len(l) for l in labels) + 2)
+        col_w = max(10, max(len(label) for label in labels) + 2)
 
-        header = " " * col_w + "".join(f"{l[:col_w-1]:>{col_w}}" for l in labels)
+        header = " " * col_w + "".join(f"{label[: col_w - 1]:>{col_w}}" for label in labels)
         print("\nConfusion matrix (rows = actual, cols = predicted)")
         print(header)
         for i, row_label in enumerate(labels):
-            row_str = f"{row_label[:col_w-1]:<{col_w}}" + "".join(f"{v:>{col_w}}" for v in matrix[i])
+            row_str = f"{row_label[: col_w - 1]:<{col_w}}" + "".join(
+                f"{v:>{col_w}}" for v in matrix[i]
+            )
             print(row_str)
 
     @staticmethod
@@ -592,12 +610,16 @@ class DetectionEvaluator:
         print(f"{'Class':<20}{'AP50':>8}{'mAP50-95':>12}{'Precision':>12}{'Recall':>10}{'F1':>8}")
         print("-" * 70)
         for c, v in report["per_class"].items():
-            print(f"{v['name']:<20}{v['AP50']:>8.3f}{v['mAP50-95']:>12.3f}"
-                  f"{v['Precision']:>12.3f}{v['Recall']:>10.3f}{v['F1']:>8.3f}")
+            print(
+                f"{v['name']:<20}{v['AP50']:>8.3f}{v['mAP50-95']:>12.3f}"
+                f"{v['Precision']:>12.3f}{v['Recall']:>10.3f}{v['F1']:>8.3f}"
+            )
         print("-" * 70)
         o = report["overall"]
-        print(f"{'ALL (mean)':<20}{o['mAP50']:>8.3f}{o['mAP50-95']:>12.3f}"
-              f"{o['Precision']:>12.3f}{o['Recall']:>10.3f}{o['F1']:>8.3f}")
+        print(
+            f"{'ALL (mean)':<20}{o['mAP50']:>8.3f}{o['mAP50-95']:>12.3f}"
+            f"{o['Precision']:>12.3f}{o['Recall']:>10.3f}{o['F1']:>8.3f}"
+        )
 
     @staticmethod
     def save_json(report, path):
@@ -617,25 +639,29 @@ class DetectionEvaluator:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for class_id, v in report["per_class"].items():
-                writer.writerow({
-                    "class_id": class_id,
-                    "name": v["name"],
-                    "AP50": v["AP50"],
-                    "mAP50-95": v["mAP50-95"],
-                    "Precision": v["Precision"],
-                    "Recall": v["Recall"],
-                    "F1": v["F1"],
-                })
+                writer.writerow(
+                    {
+                        "class_id": class_id,
+                        "name": v["name"],
+                        "AP50": v["AP50"],
+                        "mAP50-95": v["mAP50-95"],
+                        "Precision": v["Precision"],
+                        "Recall": v["Recall"],
+                        "F1": v["F1"],
+                    }
+                )
             o = report["overall"]
-            writer.writerow({
-                "class_id": "",
-                "name": "ALL (mean)",
-                "AP50": o["mAP50"],
-                "mAP50-95": o["mAP50-95"],
-                "Precision": o["Precision"],
-                "Recall": o["Recall"],
-                "F1": o["F1"],
-            })
+            writer.writerow(
+                {
+                    "class_id": "",
+                    "name": "ALL (mean)",
+                    "AP50": o["mAP50"],
+                    "mAP50-95": o["mAP50-95"],
+                    "Precision": o["Precision"],
+                    "Recall": o["Recall"],
+                    "F1": o["F1"],
+                }
+            )
 
 
 # --------------------------------------------------------------------------
@@ -648,9 +674,11 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
     with open(data_yaml_path) as f:
         cfg = yaml.safe_load(f)
 
-    root = Path(dataset_root) if dataset_root else Path(
-        cfg.get("path", data_yaml_path.parent.resolve())
-    ).resolve()
+    root = (
+        Path(dataset_root)
+        if dataset_root
+        else Path(cfg.get("path", data_yaml_path.parent.resolve())).resolve()
+    )
 
     model = YOLO(str(model_path))
     predictions = []
@@ -661,7 +689,8 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
             continue
 
         image_paths = sorted(
-            p for p in images_dir.iterdir()
+            p
+            for p in images_dir.iterdir()
             if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
         )
 
@@ -685,12 +714,14 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
             confidences = result.boxes.conf.cpu().numpy()
 
             for box, cls, confidence in zip(boxes, classes, confidences):
-                predictions.append({
-                    "image_id": image_id,
-                    "class_id": int(cls),
-                    "bbox": box.tolist(),
-                    "score": float(confidence),
-                })
+                predictions.append(
+                    {
+                        "image_id": image_id,
+                        "class_id": int(cls),
+                        "bbox": box.tolist(),
+                        "score": float(confidence),
+                    }
+                )
 
     return predictions
 
@@ -700,8 +731,8 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Evaluate a saved YOLO best.pt directly on the validation "
-                    "split. Computes mAP50-95, AP50, Precision, Recall, F1, "
-                    "and a confusion matrix."
+        "split. Computes mAP50-95, AP50, Precision, Recall, F1, "
+        "and a confusion matrix."
     )
     parser.add_argument("--data", required=True, help="Path to data.yaml")
     parser.add_argument("--model", required=True, help="Path to the saved best.pt model")
@@ -709,7 +740,7 @@ def main():
     parser.add_argument(
         "--dataset-root",
         help="Shared dataset root used to create unique relative-path image IDs. "
-             "Defaults to the path in data.yaml.",
+        "Defaults to the path in data.yaml.",
     )
     parser.add_argument(
         "--iou-thresh",
@@ -737,9 +768,7 @@ def main():
         cfg = yaml.safe_load(f)
 
     dataset_root = Path(
-        args.dataset_root
-        if args.dataset_root
-        else cfg.get("path", data_yaml.parent.resolve())
+        args.dataset_root if args.dataset_root else cfg.get("path", data_yaml.parent.resolve())
     ).resolve()
 
     print("=" * 60)

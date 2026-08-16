@@ -16,7 +16,6 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-
 from evaluator import (
     compute_average_precision,
     compute_image_id,
@@ -109,7 +108,12 @@ class TestImagesDirToLabelsDir(unittest.TestCase):
         self.assertEqual(result, Path("data/labels/val/tank_images"))
 
     def test_multiple_source_folder_names_untouched(self):
-        for folder in ["tank_images", "military_vehicles", "military_vehicles_obj", "military_objects"]:
+        for folder in [
+            "tank_images",
+            "military_vehicles",
+            "military_vehicles_obj",
+            "military_objects",
+        ]:
             src = Path("combined/images/val") / folder
             expected = Path("combined/labels/val") / folder
             self.assertEqual(images_dir_to_labels_dir(src), expected)
@@ -225,8 +229,8 @@ class TestMatchPredictionsToGroundTruth(unittest.TestCase):
         # should claim the match, the other becomes a false positive
         gt = [(0, [0, 0, 10, 10])]
         preds = [
-            (0, [0, 0, 10, 10], 0.9),   # higher confidence, listed first
-            (0, [1, 1, 11, 11], 0.4),   # lower confidence
+            (0, [0, 0, 10, 10], 0.9),  # higher confidence, listed first
+            (0, [1, 1, 11, 11], 0.4),  # lower confidence
         ]
         pairs = match_predictions_to_ground_truth(gt, preds, iou_thresh=0.5)
         self.assertEqual(pairs[0], (0, 0))  # first pred matched
