@@ -69,9 +69,9 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from PIL import Image
 import numpy as np
 import yaml
+from PIL import Image
 from ultralytics import YOLO
 
 
@@ -116,15 +116,12 @@ def compute_ious(box, boxes) -> np.ndarray:
     inter = iw * ih
 
     area_box = max(0.0, float(box[2] - box[0])) * max(0.0, float(box[3] - box[1]))
-    area_boxes = (
-        np.maximum(0.0, boxes[:, 2] - boxes[:, 0])
-        * np.maximum(0.0, boxes[:, 3] - boxes[:, 1])
+    area_boxes = np.maximum(0.0, boxes[:, 2] - boxes[:, 0]) * np.maximum(
+        0.0, boxes[:, 3] - boxes[:, 1]
     )
     union = area_box + area_boxes - inter
 
-    return np.divide(
-        inter, union, out=np.zeros_like(inter), where=union > 0
-    )
+    return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
 
 
 # --------------------------------------------------------------------------
@@ -368,15 +365,13 @@ def predictions_from_detector(
     """
     if not class_name_to_id:
         raise ValueError(
-            "class_name_to_id is required. "
-            "Build it with load_class_name_to_id(data_yaml_path)."
+            "class_name_to_id is required. Build it with load_class_name_to_id(data_yaml_path)."
         )
 
     def _class_id(name):
         if name not in class_name_to_id:
             raise ValueError(
-                f"Unknown detector class {name!r}. "
-                f"Expected one of: {sorted(class_name_to_id)}"
+                f"Unknown detector class {name!r}. Expected one of: {sorted(class_name_to_id)}"
             )
         return class_name_to_id[name]
 
@@ -554,8 +549,7 @@ class DetectionEvaluator:
         self.preds = retained_predictions
         self.class_names = class_names or {}
         self.classes = sorted(
-            {g["class_id"] for g in ground_truths}
-            | {p["class_id"] for p in retained_predictions}
+            {g["class_id"] for g in ground_truths} | {p["class_id"] for p in retained_predictions}
         )
         self.iou_thresholds = np.round(np.arange(0.50, 1.00, 0.05), 2)
 
@@ -606,8 +600,7 @@ class DetectionEvaluator:
         class_preds = self.pred_by_class.get(class_id, [])
 
         matched = {
-            image_id: np.zeros(len(boxes), dtype=bool)
-            for image_id, boxes in gt_by_image.items()
+            image_id: np.zeros(len(boxes), dtype=bool) for image_id, boxes in gt_by_image.items()
         }
         n_gt = sum(len(boxes) for boxes in gt_by_image.values())
 
@@ -794,8 +787,14 @@ class DetectionEvaluator:
     def save_csv(report, path):
         """Write COCO-style per-class metrics plus an ALL row to CSV."""
         fieldnames = [
-            "class_id", "name", "AP", "AP50", "AP75",
-            "Precision", "Recall", "F1",
+            "class_id",
+            "name",
+            "AP",
+            "AP50",
+            "AP75",
+            "Precision",
+            "Recall",
+            "F1",
         ]
         with open(path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -863,7 +862,7 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
 
         results = model.predict(
             source=[str(p) for p in image_paths],
-            conf=0.001,   # retain low-confidence detections for AP ranking
+            conf=0.001,  # retain low-confidence detections for AP ranking
             max_det=100,  # COCO maxDets=100
             save=False,
             verbose=False,
