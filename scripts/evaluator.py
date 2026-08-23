@@ -2,7 +2,7 @@
 Model-Agnostic Object Detection Evaluator
 ==========================================
 
-Computes Precision, Recall, F1, mAP50-95, and a confusion matrix from any
+Computes COCO AP, AP50, AP75, Precision, Recall, F1, and a confusion matrix from any
 set of predictions and ground truth boxes, regardless of which model
 produced the predictions. This module has NO dependency on train.py, any
 training framework, -- it only needs
@@ -47,7 +47,7 @@ dataset_root when loading each subfolder keeps ids unique.
 USAGE (library)
 -----
     from evaluator import (
-        DetectionEvaluator, load_yolo, load_class_names, load_dataset_split,
+        DetectionEvaluator, load_yolo, load_class_names, load_class_name_to_id, load_dataset_split,
     )
 
     class_names = load_class_names("data.yaml")
@@ -66,11 +66,10 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from collections import defaultdict
 from pathlib import Path
 
-import cv2
+from PIL import Image
 import numpy as np
 import yaml
 from ultralytics import YOLO
@@ -96,6 +95,36 @@ def compute_iou(box_a, box_b) -> float:
     area_b = max(0.0, xb2 - xb1) * max(0.0, yb2 - yb1)
     union = area_a + area_b - inter
     return inter / union if union > 0 else 0.0
+
+
+def compute_ious(box, boxes) -> np.ndarray:
+    """Vectorized IoU between one box and many [x1,y1,x2,y2] boxes."""
+    boxes = np.asarray(boxes, dtype=np.float32)
+    if boxes.size == 0:
+        return np.empty(0, dtype=np.float32)
+
+    boxes = boxes.reshape(-1, 4)
+    box = np.asarray(box, dtype=np.float32)
+
+    ix1 = np.maximum(box[0], boxes[:, 0])
+    iy1 = np.maximum(box[1], boxes[:, 1])
+    ix2 = np.minimum(box[2], boxes[:, 2])
+    iy2 = np.minimum(box[3], boxes[:, 3])
+
+    iw = np.maximum(0.0, ix2 - ix1)
+    ih = np.maximum(0.0, iy2 - iy1)
+    inter = iw * ih
+
+    area_box = max(0.0, float(box[2] - box[0])) * max(0.0, float(box[3] - box[1]))
+    area_boxes = (
+        np.maximum(0.0, boxes[:, 2] - boxes[:, 0])
+        * np.maximum(0.0, boxes[:, 3] - boxes[:, 1])
+    )
+    union = area_box + area_boxes - inter
+
+    return np.divide(
+        inter, union, out=np.zeros_like(inter), where=union > 0
+    )
 
 
 # --------------------------------------------------------------------------
@@ -165,6 +194,25 @@ def load_class_names(data_yaml_path) -> dict[int, str]:
     return {int(k): v for k, v in names.items()}
 
 
+def load_class_name_to_id(data_yaml_path) -> dict[str, int]:
+    """
+    Load {class_name: class_id} from the same YOLO data.yaml used by
+    the ground truth, so detector class names map to the exact dataset IDs.
+    """
+    class_names = load_class_names(data_yaml_path)
+
+    class_name_to_id: dict[str, int] = {}
+    for class_id, name in class_names.items():
+        if name in class_name_to_id:
+            raise ValueError(
+                f"Duplicate class name {name!r} in {data_yaml_path}; "
+                "cannot build an unambiguous class-name mapping."
+            )
+        class_name_to_id[name] = class_id
+
+    return class_name_to_id
+
+
 def resolve_split_dirs(data_yaml_path, split: str = "val") -> list[tuple[Path, Path]]:
     """
     Return (images_dir, labels_dir) pairs for a split (default "val")
@@ -231,65 +279,70 @@ def load_yolo(labels_dir, images_dir, dataset_root=None, is_prediction: bool = F
     """
     Load ground truth or predictions from YOLO-style txt files.
 
-    labels_dir    : directory containing one .txt file per image
-                     (filename stem == image filename stem)
-    images_dir     : directory containing the corresponding images
-                     (used to read width/height via OpenCV for
-                     de-normalizing the YOLO coords)
-    dataset_root   : root used to build each image's unique id as its
-                      path relative to that root (see compute_image_id).
-                      Defaults to images_dir, which reduces to the old
-                      stem-only behavior. Pass a shared root explicitly
-                      when loading several sibling directories into the
-                      same evaluation so ids don't collide.
-    is_prediction  : if True, expects a trailing confidence column:
-                      "class x_center y_center w h confidence"
-                      otherwise: "class x_center y_center w h"
+    Optimizations:
+      * Builds an image-stem index once instead of probing every extension
+        for every label file.
+      * Reads only image metadata with Pillow to obtain width/height instead
+        of fully decoding every image with OpenCV.
     """
-    IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+    img_exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
     images_dir = Path(images_dir)
     labels_dir = Path(labels_dir)
     root = Path(dataset_root) if dataset_root is not None else images_dir
 
-    def _find_image(stem: str) -> Path | None:
-        for ext in IMG_EXTS:
-            candidate = images_dir / (stem + ext)
-            if candidate.exists():
-                return candidate
-        return None
+    # Average O(1) image lookup by stem after one directory scan.
+    image_index = {
+        path.stem: path
+        for path in images_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in img_exts
+    }
 
     out: list[dict] = []
-    for fname in os.listdir(labels_dir):
-        if not fname.endswith(".txt"):
-            continue
-        stem = Path(fname).stem
-
-        img_path = _find_image(stem)
+    for label_path in labels_dir.glob("*.txt"):
+        img_path = image_index.get(label_path.stem)
         if img_path is None:
             continue
-        img = cv2.imread(str(img_path))
-        if img is None:
+
+        try:
+            with Image.open(img_path) as image:
+                W, H = image.size
+        except (OSError, ValueError):
             continue
-        H, W = img.shape[:2]
+
         image_id = compute_image_id(img_path, root)
 
-        with open(labels_dir / fname) as f:
+        with label_path.open() as f:
             for line in f:
-                parts = line.strip().split()
-                if not parts:
+                parts = line.split()
+                if len(parts) < 5:
                     continue
-                cls = int(float(parts[0]))
-                xc, yc, w, h = map(float, parts[1:5])
+
+                try:
+                    cls = int(float(parts[0]))
+                    xc, yc, w, h = map(float, parts[1:5])
+                except ValueError:
+                    continue
+
                 x1 = (xc - w / 2) * W
                 y1 = (yc - h / 2) * H
                 x2 = (xc + w / 2) * W
                 y2 = (yc + h / 2) * H
 
-                entry = {"image_id": image_id, "class_id": cls, "bbox": [x1, y1, x2, y2]}
+                entry = {
+                    "image_id": image_id,
+                    "class_id": cls,
+                    "bbox": [x1, y1, x2, y2],
+                }
+
                 if is_prediction:
-                    entry["score"] = float(parts[5]) if len(parts) > 5 else 1.0
+                    try:
+                        entry["score"] = float(parts[5]) if len(parts) > 5 else 1.0
+                    except ValueError:
+                        entry["score"] = 1.0
+
                 out.append(entry)
+
     return out
 
 
@@ -298,37 +351,36 @@ def load_yolo(labels_dir, images_dir, dataset_root=None, is_prediction: bool = F
 # {"class": "tank", "confidence": 0.94, "bbox": [x1,y1,x2,y2]}
 # --------------------------------------------------------------------------
 def predictions_from_detector(
-    results, class_name_to_id: dict[str, int] | None = None
+    results,
+    class_name_to_id: dict[str, int],
 ) -> list[dict]:
     """
-    Convert a detector's raw output into the evaluator's expected format.
+    Convert detector-style output into the evaluator's internal format.
 
-    Expected input: a dict {image_id: [detections, ...]} or a list of
-    per-image results, where each result has:
-        {
-            "image_id": ...,          # optional if results is already keyed by image_id
-            "class": "tank",
-            "confidence": 0.94,
-            "bbox": [x1, y1, x2, y2],
-        }
+    IMPORTANT:
+    class_name_to_id must come from the SAME data.yaml used for ground truth:
 
-    class_name_to_id : optional {name: class_id} mapping. If omitted,
-                        class ids are assigned in first-seen order of
-                        the class names encountered (only safe if you
-                        don't also need those ids to line up with a
-                        specific data.yaml -- pass class_name_to_id
-                        built from load_class_names() to guarantee
-                        alignment).
+        class_name_to_id = load_class_name_to_id("data.yaml")
+        predictions = predictions_from_detector(results, class_name_to_id)
+
+    The evaluator intentionally does not assign IDs in first-seen order,
+    because that can silently make prediction IDs disagree with data.yaml.
     """
-    if class_name_to_id is None:
-        class_name_to_id = {}
+    if not class_name_to_id:
+        raise ValueError(
+            "class_name_to_id is required. "
+            "Build it with load_class_name_to_id(data_yaml_path)."
+        )
 
     def _class_id(name):
         if name not in class_name_to_id:
-            class_name_to_id[name] = len(class_name_to_id)
+            raise ValueError(
+                f"Unknown detector class {name!r}. "
+                f"Expected one of: {sorted(class_name_to_id)}"
+            )
         return class_name_to_id[name]
 
-    out = []
+    out: list[dict] = []
 
     if isinstance(results, dict):
         for image_id, dets in results.items():
@@ -361,31 +413,58 @@ def predictions_from_detector(
 # --------------------------------------------------------------------------
 def compute_average_precision(tp: np.ndarray, fp: np.ndarray, n_gt: int):
     """
-    Pure function. Given already score-sorted (descending) true/false
-    positive indicator arrays for one class at one IoU threshold, plus
-    the total ground-truth count for that class, compute:
+    COCO-style Average Precision for one class at one IoU threshold.
+
+    Predictions must already be sorted by descending confidence.
+    Precision is interpolated on the standard 101 recall thresholds
+    [0.00, 0.01, ..., 1.00], matching the core COCO AP convention.
+
+    Returns:
         (ap, final_precision, final_recall)
-    ap is None when n_gt == 0 (undefined -- caller should exclude it
-    when averaging across classes).
+
+    AP is None when n_gt == 0 because the metric is undefined for a class
+    with no ground-truth instances.
     """
     if n_gt == 0:
         return None, 0.0, 0.0
 
-    tp_cum = np.cumsum(tp)
-    fp_cum = np.cumsum(fp)
-    recalls = tp_cum / (n_gt + 1e-12)
-    precisions = tp_cum / (tp_cum + fp_cum + 1e-12)
+    tp_cum = np.cumsum(tp, dtype=np.float64)
+    fp_cum = np.cumsum(fp, dtype=np.float64)
 
-    # monotonic envelope
-    for i in range(len(precisions) - 2, -1, -1):
-        precisions[i] = max(precisions[i], precisions[i + 1])
+    recalls = tp_cum / n_gt
+    precisions = tp_cum / np.maximum(
+        tp_cum + fp_cum,
+        np.finfo(np.float64).eps,
+    )
 
-    recalls = np.concatenate(([0.0], recalls, [1.0]))
-    precisions = np.concatenate(([precisions[0] if len(precisions) else 0.0], precisions, [0.0]))
-    ap = float(np.sum(np.diff(recalls) * precisions[1:]))  # trapezoid-style AUC under PR curve
+    # COCO precision envelope: precision at recall r is the maximum
+    # precision observed at any recall >= r.
+    if precisions.size:
+        precisions = np.maximum.accumulate(precisions[::-1])[::-1]
 
-    final_p = float(precisions[-2]) if len(precisions) > 1 else 0.0
-    final_r = float(recalls[-2]) if len(recalls) > 1 else 0.0
+    # COCO uses 101 recall thresholds: 0.00, 0.01, ..., 1.00.
+    recall_thresholds = np.linspace(0.0, 1.0, 101)
+    precision_at_recall = np.zeros(101, dtype=np.float64)
+
+    if recalls.size:
+        indices = np.searchsorted(recalls, recall_thresholds, side="left")
+        valid = indices < precisions.size
+        precision_at_recall[valid] = precisions[indices[valid]]
+
+    ap = float(precision_at_recall.mean())
+
+    final_p = (
+        float(
+            tp_cum[-1]
+            / max(
+                tp_cum[-1] + fp_cum[-1],
+                np.finfo(np.float64).eps,
+            )
+        )
+        if tp_cum.size
+        else 0.0
+    )
+    final_r = float(tp_cum[-1] / n_gt) if tp_cum.size else 0.0
     return ap, final_p, final_r
 
 
@@ -451,48 +530,115 @@ class DetectionEvaluator:
         ground_truths, predictions : lists of dicts (see module docstring)
         class_names : optional {class_id: name} for a readable report
                       (e.g. from load_class_names("data.yaml"))
+
+        Performance optimizations:
+          * Ground truth and predictions are indexed once by class/image.
+          * Predictions are sorted by confidence once per class.
+          * Match results are cached by (class_id, IoU threshold).
+          * Confusion-matrix image groupings are built once.
         """
         self.gt = ground_truths
-        self.preds = predictions
+        self.class_names = class_names or {}
+        self.max_detections_per_image = 100  # COCO maxDets=100 benchmark setting
+
+        # COCO evaluates at most the top 100 detections per image, ranked by confidence.
+        preds_grouped = defaultdict(list)
+        for p in predictions:
+            preds_grouped[p["image_id"]].append(p)
+
+        retained_predictions = []
+        for image_preds in preds_grouped.values():
+            image_preds.sort(key=lambda p: p["score"], reverse=True)
+            retained_predictions.extend(image_preds[: self.max_detections_per_image])
+
+        self.preds = retained_predictions
         self.class_names = class_names or {}
         self.classes = sorted(
-            set([g["class_id"] for g in ground_truths] + [p["class_id"] for p in predictions])
+            {g["class_id"] for g in ground_truths}
+            | {p["class_id"] for p in retained_predictions}
         )
-        self.iou_thresholds = np.round(np.arange(0.50, 1.00, 0.05), 2)  # 0.50..0.95
+        self.iou_thresholds = np.round(np.arange(0.50, 1.00, 0.05), 2)
+
+        self.gt_by_class_image = defaultdict(lambda: defaultdict(list))
+        self.pred_by_class = defaultdict(list)
+        self.gt_by_image = defaultdict(list)
+        self.pred_by_image = defaultdict(list)
+
+        for g in ground_truths:
+            class_id = g["class_id"]
+            image_id = g["image_id"]
+            bbox = g["bbox"]
+            self.gt_by_class_image[class_id][image_id].append(bbox)
+            self.gt_by_image[image_id].append((class_id, bbox))
+
+        for p in retained_predictions:
+            class_id = p["class_id"]
+            image_id = p["image_id"]
+            bbox = p["bbox"]
+            score = p["score"]
+            self.pred_by_class[class_id].append(p)
+            self.pred_by_image[image_id].append((class_id, bbox, score))
+
+        for class_preds in self.pred_by_class.values():
+            class_preds.sort(key=lambda p: p["score"], reverse=True)
+
+        for image_preds in self.pred_by_image.values():
+            image_preds.sort(key=lambda x: x[2], reverse=True)
+
+        self._match_cache: dict[tuple[int, float], tuple[np.ndarray, np.ndarray, int]] = {}
 
     # ---- matching at a single IoU threshold, single class -------------
     def _match_single_class(self, class_id, iou_thresh):
-        gt_by_image = defaultdict(list)
-        for g in self.gt:
-            if g["class_id"] == class_id:
-                gt_by_image[g["image_id"]].append(g["bbox"])
+        """
+        Greedily match predictions for one class at one IoU threshold.
 
-        class_preds = [p for p in self.preds if p["class_id"] == class_id]
-        class_preds.sort(key=lambda p: p["score"], reverse=True)
+        Compared with the original implementation, this method does not
+        rescan all GT/predictions or re-sort predictions on every call.
+        It also computes all candidate IoUs for a prediction in one
+        vectorized NumPy operation.
+        """
+        key = (int(class_id), float(iou_thresh))
+        cached = self._match_cache.get(key)
+        if cached is not None:
+            return cached
 
-        matched = {img: np.zeros(len(boxes), dtype=bool) for img, boxes in gt_by_image.items()}
-        n_gt = sum(len(v) for v in gt_by_image.values())
+        gt_by_image = self.gt_by_class_image.get(class_id, {})
+        class_preds = self.pred_by_class.get(class_id, [])
 
-        tp = np.zeros(len(class_preds))
-        fp = np.zeros(len(class_preds))
+        matched = {
+            image_id: np.zeros(len(boxes), dtype=bool)
+            for image_id, boxes in gt_by_image.items()
+        }
+        n_gt = sum(len(boxes) for boxes in gt_by_image.values())
+
+        tp = np.zeros(len(class_preds), dtype=np.float32)
+        fp = np.zeros(len(class_preds), dtype=np.float32)
 
         for i, pred in enumerate(class_preds):
-            gt_boxes = gt_by_image.get(pred["image_id"], [])
-            best_iou, best_j = 0.0, -1
-            for j, gb in enumerate(gt_boxes):
-                if matched[pred["image_id"]][j]:
-                    continue
-                iou = compute_iou(pred["bbox"], gb)
-                if iou > best_iou:
-                    best_iou, best_j = iou, j
+            image_id = pred["image_id"]
+            gt_boxes = gt_by_image.get(image_id, [])
 
-            if best_iou >= iou_thresh and best_j >= 0:
-                tp[i] = 1
-                matched[pred["image_id"]][best_j] = True
+            if not gt_boxes:
+                fp[i] = 1.0
+                continue
+
+            ious = compute_ious(pred["bbox"], gt_boxes)
+            already_matched = matched[image_id]
+
+            # Exclude GT boxes already assigned to a higher-confidence prediction.
+            available_ious = np.where(already_matched, -1.0, ious)
+            best_j = int(np.argmax(available_ious))
+            best_iou = float(available_ious[best_j])
+
+            if best_iou >= iou_thresh:
+                tp[i] = 1.0
+                already_matched[best_j] = True
             else:
-                fp[i] = 1
+                fp[i] = 1.0
 
-        return tp, fp, n_gt
+        result = (tp, fp, n_gt)
+        self._match_cache[key] = result
+        return result
 
     def _average_precision(self, class_id, iou_thresh):
         tp, fp, n_gt = self._match_single_class(class_id, iou_thresh)
@@ -506,39 +652,62 @@ class DetectionEvaluator:
 
     # ---- full report -----------------------------------------------------
     def evaluate(self):
+        """Compute COCO-style AP metrics plus Precision/Recall/F1 at IoU=0.50."""
         per_class = {}
+
         for c in self.classes:
+            # Reuse the IoU=0.50 match result for AP50 and P/R/F1.
+            tp50, fp50, n_gt = self._match_single_class(c, 0.50)
+            ap50, _, _ = compute_average_precision(tp50, fp50, n_gt)
+
+            tp_sum = float(tp50.sum())
+            fp_sum = float(fp50.sum())
+            fn_sum = n_gt - tp_sum
+            precision, recall, f1 = compute_precision_recall_f1(tp_sum, fp_sum, fn_sum)
+
             ap_per_iou = []
+            ap75 = None
             for thr in self.iou_thresholds:
-                ap, _, _ = self._average_precision(c, thr)
+                thr = float(thr)
+                if thr == 0.50:
+                    ap = ap50
+                else:
+                    tp, fp, n_gt_thr = self._match_single_class(c, thr)
+                    ap, _, _ = compute_average_precision(tp, fp, n_gt_thr)
+
+                if thr == 0.75:
+                    ap75 = ap
                 if ap is not None:
                     ap_per_iou.append(ap)
-            map_50_95 = float(np.mean(ap_per_iou)) if ap_per_iou else 0.0
 
-            ap50, _, _ = self._average_precision(c, 0.50)
-            precision, recall, f1 = self._prf_at_50(c)
+            coco_ap = float(np.mean(ap_per_iou)) if ap_per_iou else 0.0
 
             per_class[c] = {
                 "name": self.class_names.get(c, str(c)),
+                "AP": coco_ap,
                 "AP50": ap50 if ap50 is not None else 0.0,
-                "mAP50-95": map_50_95,
+                "AP75": ap75 if ap75 is not None else 0.0,
+                # Backward-compatible alias for existing consumers.
+                "mAP50-95": coco_ap,
                 "Precision": precision,
                 "Recall": recall,
                 "F1": f1,
+                "n_gt": n_gt,
             }
 
+        # COCO AP is undefined for classes with no ground truth, so exclude them.
+        valid = [v for v in per_class.values() if v["n_gt"] > 0]
+        overall_ap = float(np.mean([v["AP"] for v in valid])) if valid else 0.0
         overall = {
-            "mAP50-95": float(np.mean([v["mAP50-95"] for v in per_class.values()]))
-            if per_class
-            else 0.0,
-            "mAP50": float(np.mean([v["AP50"] for v in per_class.values()])) if per_class else 0.0,
-            "Precision": float(np.mean([v["Precision"] for v in per_class.values()]))
-            if per_class
-            else 0.0,
-            "Recall": float(np.mean([v["Recall"] for v in per_class.values()]))
-            if per_class
-            else 0.0,
-            "F1": float(np.mean([v["F1"] for v in per_class.values()])) if per_class else 0.0,
+            "AP": overall_ap,
+            "AP50": float(np.mean([v["AP50"] for v in valid])) if valid else 0.0,
+            "AP75": float(np.mean([v["AP75"] for v in valid])) if valid else 0.0,
+            # Backward-compatible aliases.
+            "mAP50-95": overall_ap,
+            "mAP50": float(np.mean([v["AP50"] for v in valid])) if valid else 0.0,
+            "Precision": float(np.mean([v["Precision"] for v in valid])) if valid else 0.0,
+            "Recall": float(np.mean([v["Recall"] for v in valid])) if valid else 0.0,
+            "F1": float(np.mean([v["F1"] for v in valid])) if valid else 0.0,
         }
         return {"per_class": per_class, "overall": overall}
 
@@ -546,33 +715,20 @@ class DetectionEvaluator:
     def confusion_matrix(self, iou_thresh: float = 0.5) -> dict:
         """
         Build a (n_classes+1) x (n_classes+1) confusion matrix at a fixed
-        IoU threshold. Rows = ground-truth class, columns = predicted
-        class. An extra "background" row/column captures false positives
-        (a prediction with no matching ground truth -> background row,
-        predicted col) and false negatives (a ground truth with no
-        matching prediction -> gt row, background col).
-
-        Returns {"labels": [...], "matrix": np.ndarray}.
+        IoU threshold. Rows = ground-truth class, columns = predicted class.
+        The final row/column is background for unmatched predictions/GT.
         """
         labels = [self.class_names.get(c, str(c)) for c in self.classes] + ["background"]
         idx = {c: i for i, c in enumerate(self.classes)}
         bg = len(self.classes)
-        n = len(labels)
-        matrix = np.zeros((n, n), dtype=int)
+        matrix = np.zeros((len(labels), len(labels)), dtype=int)
 
-        gt_by_image = defaultdict(list)
-        for g in self.gt:
-            gt_by_image[g["image_id"]].append((g["class_id"], g["bbox"]))
-
-        pred_by_image = defaultdict(list)
-        for p in self.preds:
-            pred_by_image[p["image_id"]].append((p["class_id"], p["bbox"], p["score"]))
-
-        image_ids = set(gt_by_image) | set(pred_by_image)
+        image_ids = set(self.gt_by_image) | set(self.pred_by_image)
         for image_id in image_ids:
-            gts = gt_by_image.get(image_id, [])
-            preds = sorted(pred_by_image.get(image_id, []), key=lambda x: x[2], reverse=True)
+            gts = self.gt_by_image.get(image_id, [])
+            preds = self.pred_by_image.get(image_id, [])
             pairs = match_predictions_to_ground_truth(gts, preds, iou_thresh)
+
             for gt_class, pred_class in pairs:
                 row = idx[gt_class] if gt_class is not None else bg
                 col = idx[pred_class] if pred_class is not None else bg
@@ -607,17 +763,20 @@ class DetectionEvaluator:
 
     @staticmethod
     def print_report(report):
-        print(f"{'Class':<20}{'AP50':>8}{'mAP50-95':>12}{'Precision':>12}{'Recall':>10}{'F1':>8}")
-        print("-" * 70)
-        for c, v in report["per_class"].items():
+        print(
+            f"{'Class':<20}{'COCO AP':>10}{'AP50':>8}{'AP75':>8}"
+            f"{'Precision':>12}{'Recall':>10}{'F1':>8}"
+        )
+        print("-" * 76)
+        for _c, v in report["per_class"].items():
             print(
-                f"{v['name']:<20}{v['AP50']:>8.3f}{v['mAP50-95']:>12.3f}"
+                f"{v['name']:<20}{v['AP']:>10.3f}{v['AP50']:>8.3f}{v['AP75']:>8.3f}"
                 f"{v['Precision']:>12.3f}{v['Recall']:>10.3f}{v['F1']:>8.3f}"
             )
-        print("-" * 70)
+        print("-" * 76)
         o = report["overall"]
         print(
-            f"{'ALL (mean)':<20}{o['mAP50']:>8.3f}{o['mAP50-95']:>12.3f}"
+            f"{'ALL (COCO mean)':<20}{o['AP']:>10.3f}{o['AP50']:>8.3f}{o['AP75']:>8.3f}"
             f"{o['Precision']:>12.3f}{o['Recall']:>10.3f}{o['F1']:>8.3f}"
         )
 
@@ -633,8 +792,11 @@ class DetectionEvaluator:
 
     @staticmethod
     def save_csv(report, path):
-        """Write the per-class breakdown (plus an ALL row) to a CSV file."""
-        fieldnames = ["class_id", "name", "AP50", "mAP50-95", "Precision", "Recall", "F1"]
+        """Write COCO-style per-class metrics plus an ALL row to CSV."""
+        fieldnames = [
+            "class_id", "name", "AP", "AP50", "AP75",
+            "Precision", "Recall", "F1",
+        ]
         with open(path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
@@ -643,8 +805,9 @@ class DetectionEvaluator:
                     {
                         "class_id": class_id,
                         "name": v["name"],
+                        "AP": v["AP"],
                         "AP50": v["AP50"],
-                        "mAP50-95": v["mAP50-95"],
+                        "AP75": v["AP75"],
                         "Precision": v["Precision"],
                         "Recall": v["Recall"],
                         "F1": v["F1"],
@@ -654,9 +817,10 @@ class DetectionEvaluator:
             writer.writerow(
                 {
                     "class_id": "",
-                    "name": "ALL (mean)",
-                    "AP50": o["mAP50"],
-                    "mAP50-95": o["mAP50-95"],
+                    "name": "ALL (COCO mean)",
+                    "AP": o["AP"],
+                    "AP50": o["AP50"],
+                    "AP75": o["AP75"],
                     "Precision": o["Precision"],
                     "Recall": o["Recall"],
                     "F1": o["F1"],
@@ -699,6 +863,8 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
 
         results = model.predict(
             source=[str(p) for p in image_paths],
+            conf=0.001,   # retain low-confidence detections for AP ranking
+            max_det=100,  # COCO maxDets=100
             save=False,
             verbose=False,
         )
@@ -731,7 +897,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Evaluate a saved YOLO best.pt directly on the validation "
-        "split. Computes mAP50-95, AP50, Precision, Recall, F1, "
+        "split. Computes COCO AP@[.50:.95], AP50, AP75, Precision, Recall, F1, "
         "and a confusion matrix."
     )
     parser.add_argument("--data", required=True, help="Path to data.yaml")
