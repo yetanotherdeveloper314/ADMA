@@ -8,7 +8,11 @@ produced the predictions. This module has NO dependency on train.py, any
 training framework, -- it only needs
 YOLO-format label files (and, for the standalone CLI, a data.yaml for
 class names). It can be imported as a library or run directly:
-
+    py -m poetry run python scripts\evaluator.py `                         
+>>   --data data\combined\data.yaml `            
+>>   --model runs\detect\runs\all_n\weights\best.pt `
+>>   --split val `
+>>   --output-dir evaluation_results
     python evaluator.py \
         --data data.yaml \
         --gt-images path/to/val/images --gt-labels path/to/val/labels \
@@ -64,6 +68,7 @@ USAGE (library)
 
 from __future__ import annotations
 
+import time 
 import csv
 import json
 from collections import defaultdict
@@ -846,19 +851,40 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
     model = YOLO(str(model_path))
     predictions = []
 
+    # Performance measurements across the full dataset split.
+    preprocess_times = []
+    inference_times = []
+    postprocess_times = []
+
+    total_images = 0
+    total_wall_time = 0.0
+
     for images_dir, _labels_dir in resolve_split_dirs(data_yaml_path, split):
         images_dir = Path(images_dir)
+
         if not images_dir.exists():
             continue
 
         image_paths = sorted(
             p
             for p in images_dir.iterdir()
-            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+            if p.suffix.lower()
+            in {
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".bmp",
+                ".tif",
+                ".tiff",
+            }
         )
 
         if not image_paths:
             continue
+
+        # Wall-clock timing includes preprocessing, inference,
+        # postprocessing, and other model.predict() overhead.
+        start = time.perf_counter()
 
         results = model.predict(
             source=[str(p) for p in image_paths],
@@ -868,7 +894,18 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
             verbose=False,
         )
 
+        elapsed = time.perf_counter() - start
+
+        num_images = len(image_paths)
+        total_images += num_images
+        total_wall_time += elapsed
+
         for image_path, result in zip(image_paths, results):
+            # Ultralytics reports these timings in milliseconds per image.
+            preprocess_times.append(result.speed["preprocess"])
+            inference_times.append(result.speed["inference"])
+            postprocess_times.append(result.speed["postprocess"])
+
             image_id = compute_image_id(image_path, root)
 
             if result.boxes is None or len(result.boxes) == 0:
@@ -878,7 +915,11 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
             classes = result.boxes.cls.cpu().numpy()
             confidences = result.boxes.conf.cpu().numpy()
 
-            for box, cls, confidence in zip(boxes, classes, confidences):
+            for box, cls, confidence in zip(
+                boxes,
+                classes,
+                confidences,
+            ):
                 predictions.append(
                     {
                         "image_id": image_id,
@@ -887,6 +928,57 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
                         "score": float(confidence),
                     }
                 )
+
+    # --------------------------------------------------------------
+    # Performance summary across the entire requested dataset split.
+    # --------------------------------------------------------------
+    if inference_times:
+        avg_preprocess = float(np.mean(preprocess_times))
+        avg_inference = float(np.mean(inference_times))
+        avg_postprocess = float(np.mean(postprocess_times))
+
+        avg_pipeline = (
+            avg_preprocess
+            + avg_inference
+            + avg_postprocess
+        )
+
+        wall_latency = (
+            (total_wall_time / total_images) * 1000
+            if total_images > 0
+            else 0.0
+        )
+
+        inference_fps = (
+            1000.0 / avg_inference
+            if avg_inference > 0
+            else 0.0
+        )
+
+        pipeline_fps = (
+            1000.0 / avg_pipeline
+            if avg_pipeline > 0
+            else 0.0
+        )
+
+        wall_fps = (
+            total_images / total_wall_time
+            if total_wall_time > 0
+            else 0.0
+        )
+
+        print("\nInference performance")
+        print("-" * 45)
+        print(f"Images evaluated   : {total_images}")
+        print(f"Preprocess         : {avg_preprocess:.2f} ms/image")
+        print(f"Inference          : {avg_inference:.2f} ms/image")
+        print(f"Postprocess        : {avg_postprocess:.2f} ms/image")
+        print(f"Pipeline latency   : {avg_pipeline:.2f} ms/image")
+        print(f"Wall-clock latency : {wall_latency:.2f} ms/image")
+        print(f"Inference FPS      : {inference_fps:.2f}")
+        print(f"Pipeline FPS       : {pipeline_fps:.2f}")
+        print(f"Wall-clock FPS     : {wall_fps:.2f}")
+        print("-" * 45)
 
     return predictions
 
