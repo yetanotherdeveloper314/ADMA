@@ -233,7 +233,7 @@ def train(
     print("=" * 60)
     print("  MILITARY ASSET DETECTION -- TRAINING")
     print("=" * 60)
-    print(f"  Model       : YOLOv8{model_size}")
+    print(f"  Model       : YOLO11{model_size}")
     print(f"  Dataset     : {data_yaml.resolve()}")
     print(f"  Output name : {output_name}")
     print(f"  Epochs      : {epochs}")
@@ -242,7 +242,7 @@ def train(
     print(f"  Workers     : {workers}")
     print("=" * 60)
 
-    base_model = f"yolov8{model_size}.pt"
+    base_model = f"yolo11{model_size}.pt"
     model = YOLO(base_model)
 
     model.train(
@@ -273,8 +273,12 @@ def train(
     print("=" * 60)
     print(f"  Model saved to    : {dest.resolve()}")
     print(f"  Training plots at : {run_best.parent.parent.resolve()}")
+
     print()
     print("  Next steps:")
+    print(
+        f"    python scripts/evaluator.py --data {data_yaml} --gt-images ... --gt-labels ... --pred-labels ..."
+    )
     print(f"    python scripts/test_detection.py --image YOUR_IMAGE.jpg --model {output_name}")
     print(f"    python -m adma.app   (select '{output_name}' from the dropdown)")
     print("=" * 60)
@@ -313,7 +317,7 @@ if __name__ == "__main__":
         "--model-size",
         default=DEFAULT_MODEL_SIZE,
         choices=["n", "s", "m", "l", "x"],
-        help="YOLOv8 size: n(ano) s(mall) m(edium) l(arge) x(tra-large)",
+        help="YOLO11 size: n(ano) s(mall) m(edium) l(arge) x(tra-large)",
     )
     args = parser.parse_args()
 
