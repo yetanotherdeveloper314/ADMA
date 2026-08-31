@@ -68,9 +68,9 @@ USAGE (library)
 
 from __future__ import annotations
 
-import time 
 import csv
 import json
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -552,7 +552,6 @@ class DetectionEvaluator:
             retained_predictions.extend(image_preds[: self.max_detections_per_image])
 
         self.preds = retained_predictions
-        self.class_names = class_names or {}
         self.classes = sorted(
             {g["class_id"] for g in ground_truths} | {p["class_id"] for p in retained_predictions}
         )
@@ -835,7 +834,13 @@ class DetectionEvaluator:
 # --------------------------------------------------------------------------
 # Standalone CLI -- evaluate a saved YOLO best.pt directly
 # --------------------------------------------------------------------------
-def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="val"):
+def _predict_with_model(
+    model_path,
+    data_yaml_path,
+    dataset_root=None,
+    split="val",
+    conf_thresh=0.001,
+):
     """Run the saved YOLO model on every image in the requested split."""
     data_yaml_path = Path(data_yaml_path)
 
@@ -888,8 +893,8 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
 
         results = model.predict(
             source=[str(p) for p in image_paths],
-            conf=0.001,  # retain low-confidence detections for AP ranking
-            max_det=100,  # COCO maxDets=100
+            conf=conf_thresh,
+            max_det=100,
             save=False,
             verbose=False,
         )
@@ -937,35 +942,15 @@ def _predict_with_model(model_path, data_yaml_path, dataset_root=None, split="va
         avg_inference = float(np.mean(inference_times))
         avg_postprocess = float(np.mean(postprocess_times))
 
-        avg_pipeline = (
-            avg_preprocess
-            + avg_inference
-            + avg_postprocess
-        )
+        avg_pipeline = avg_preprocess + avg_inference + avg_postprocess
 
-        wall_latency = (
-            (total_wall_time / total_images) * 1000
-            if total_images > 0
-            else 0.0
-        )
+        wall_latency = (total_wall_time / total_images) * 1000 if total_images > 0 else 0.0
 
-        inference_fps = (
-            1000.0 / avg_inference
-            if avg_inference > 0
-            else 0.0
-        )
+        inference_fps = 1000.0 / avg_inference if avg_inference > 0 else 0.0
 
-        pipeline_fps = (
-            1000.0 / avg_pipeline
-            if avg_pipeline > 0
-            else 0.0
-        )
+        pipeline_fps = 1000.0 / avg_pipeline if avg_pipeline > 0 else 0.0
 
-        wall_fps = (
-            total_images / total_wall_time
-            if total_wall_time > 0
-            else 0.0
-        )
+        wall_fps = total_images / total_wall_time if total_wall_time > 0 else 0.0
 
         print("\nInference performance")
         print("-" * 45)
@@ -1010,6 +995,15 @@ def main():
         default=".",
         help="Where to write evaluation.json, evaluation.csv, and confusion_matrix.csv",
     )
+    parser.add_argument(
+        "--conf-thresh",
+        type=float,
+        default=0.001,
+        help=(
+            "Minimum confidence threshold for predictions "
+            "(default: 0.001, recommended for AP ranking)"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1051,6 +1045,7 @@ def main():
         data_yaml,
         dataset_root=dataset_root,
         split=args.split,
+        conf_thresh=args.conf_thresh,
     )
 
     print(f"  Prediction boxes  : {len(predictions)}")

@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-from evaluator import (
+
+from scripts.evaluator import (
     compute_average_precision,
     compute_image_id,
     compute_iou,
