@@ -69,7 +69,29 @@ Larger models are more accurate but slower and require more GPU memory.
 
 > **GPU recommended.** Training on CPU is very slow. Use `--model-size n` and fewer `--epochs` for CPU-only training, or use [Google Colab](https://colab.research.google.com/) with the included `deploy_colab.ipynb` notebook for free GPU access.
 
-### 6. Launch the web app
+### 6. Evaluate a model
+
+```bash
+# Run a trained model on the validation split of the combined dataset
+poetry run python scripts/evaluator.py --dataset all --model all_m
+
+# Or score saved predictions from any model against any data.yaml
+poetry run python scripts/evaluator.py --data path/to/data.yaml --pred-labels path/to/labels
+poetry run python scripts/evaluator.py --data path/to/data.yaml --pred-json predictions.json
+```
+
+The evaluator reports COCO mAP50-95, mAP50 and mAP75, per-class precision / recall / F1 at an operating confidence (`--conf`, default `ADMA_DEFAULT_CONFIDENCE`), the confidence with the best mean F1, a confusion matrix, and per-image latency when it runs the model itself. Reports are written to `runs/eval/<name>/` (`metrics.json`, `per_class.csv`, `confusion_matrix.csv`).
+
+Prediction sources:
+
+- `--model` — a model name from `models/` or a path to any Ultralytics weights file.
+- `--pred-labels` — YOLO txt files with a confidence column (`class xc yc w h conf`, e.g. Ultralytics `save_txt=True save_conf=True`). Class ids must follow the `data.yaml` order.
+- `--pred-json` — detection records in pixel coordinates, in the same shape `MilitaryAssetDetector.detect()` returns plus an `image` key:
+  `[{"image": "tank_images/img1.jpg", "class": "tank", "confidence": 0.91, "bbox": [x1, y1, x2, y2]}]`
+
+If a model's class names differ from the dataset's, pass `--class-map map.yaml` mapping model names to dataset names (`null` drops a class). Other models can also be evaluated from Python by passing any `image_path -> detections` callable to `adma.evaluator.predict_with`.
+
+### 7. Launch the web app
 
 ```bash
 poetry run python -m adma.app
@@ -77,7 +99,7 @@ poetry run python -m adma.app
 
 Open [http://localhost:7860](http://localhost:7860) in your browser.
 
-### 7. Test on a single image (CLI)
+### 8. Test on a single image (CLI)
 
 ```bash
 poetry run python scripts/test_detection.py --image path/to/photo.jpg --model all_m
@@ -129,10 +151,12 @@ ADMA/
 │   ├── app.py             Gradio web application (entry point)
 │   ├── config.py          Configuration from environment variables
 │   ├── detector.py        YOLOv8 inference engine
+│   ├── evaluator.py       Model-agnostic detection metrics
 │   └── datasets.py        Dataset registry & label normalization
 ├── scripts/               CLI tools
 │   ├── download_dataset.py   Download datasets from Roboflow
 │   ├── train.py              Fine-tune YOLOv8 models
+│   ├── evaluator.py          Evaluate a model or saved predictions
 │   └── test_detection.py     Run detection on a single image
 ├── pyproject.toml         Poetry dependencies & scripts
 ├── Dockerfile             Container build
@@ -147,7 +171,7 @@ ADMA/
 | ---------- | -------------------------------------- |
 | `models/`  | Trained model weights (`best.pt`)      |
 | `data/`    | Downloaded Roboflow datasets           |
-| `runs/`    | Ultralytics training artifacts & plots |
+| `runs/`    | Ultralytics training artifacts & plots, evaluation reports |
 | `output/`  | Annotated images from CLI testing      |
 
 ---
