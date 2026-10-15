@@ -30,7 +30,11 @@ from adma.config import (
     TRAIN_PATIENCE,
     TRAIN_WORKERS,
 )
-from adma.datasets import DATASETS, LABEL_MAP
+from adma.datasets import (
+    COMBINED_DATASET_EXCLUSIONS,
+    DATASETS,
+    LABEL_MAP,
+)
 
 COMBINED_DIR = Path(COMBINED_DATA_DIR)
 
@@ -85,14 +89,25 @@ def _load_dataset_config(name: str, info: dict) -> dict | None:
         "names": names,
     }
 
+def _map_label(raw_name: str, dataset_name: str) -> str | None:
+    """Return the canonical class or None; reject unconfigured labels."""
+    if raw_name not in LABEL_MAP:
+        raise ValueError(
+            f"Source label '{raw_name}' in dataset '{dataset_name}' "
+            "is missing from LABEL_MAP. Add an explicit mapping or "
+            "set the label to None."
+        )
 
+    return LABEL_MAP[raw_name]
 def _build_unified_class_list(configs: list[dict]) -> list[str]:
     all_names: set[str] = set()
+
     for cfg in configs:
         for raw in cfg["names"]:
-            mapped = LABEL_MAP.get(raw, raw)
+            mapped = _map_label(raw, cfg["name"])
             if mapped is not None:
                 all_names.add(mapped)
+
     return sorted(all_names)
 
 
@@ -103,8 +118,10 @@ def _remap_labels_for_dataset(
 ) -> tuple[Path, Path]:
     """Copy images and rewrite label files with unified, normalized indices."""
     old_to_new: dict[int, int | None] = {}
+
     for old_idx, old_name in enumerate(cfg["names"]):
-        mapped = LABEL_MAP.get(old_name, old_name)
+        mapped = _map_label(old_name, cfg["name"])
+
         if mapped is None:
             old_to_new[old_idx] = None
         else:
@@ -160,7 +177,13 @@ def _merge_all_datasets() -> Path:
     print("\n  Merging all downloaded datasets with label normalization ...\n")
 
     configs = []
+
     for name, info in DATASETS.items():
+        if name in COMBINED_DATASET_EXCLUSIONS:
+            print(f"  [SKIP] '{name}' excluded from combined training.")
+            print(f"         {COMBINED_DATASET_EXCLUSIONS[name]}")
+            continue
+
         cfg = _load_dataset_config(name, info)
         if cfg is not None:
             configs.append(cfg)
