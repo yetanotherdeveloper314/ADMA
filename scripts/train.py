@@ -89,6 +89,7 @@ def _load_dataset_config(name: str, info: dict) -> dict | None:
         "names": names,
     }
 
+
 def _map_label(raw_name: str, dataset_name: str) -> str | None:
     """Return the canonical class or None; reject unconfigured labels."""
     if raw_name not in LABEL_MAP:
@@ -99,6 +100,8 @@ def _map_label(raw_name: str, dataset_name: str) -> str | None:
         )
 
     return LABEL_MAP[raw_name]
+
+
 def _build_unified_class_list(configs: list[dict]) -> list[str]:
     all_names: set[str] = set()
 

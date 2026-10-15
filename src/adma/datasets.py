@@ -44,11 +44,9 @@ LABEL_MAP: dict[str, str | None] = {
     "hong-di-chuyen": None,
     "hong-hoa-luc": None,
     "hong-hoan-toan": None,
-
     # Military Vehicle Detection
     # This dataset will be excluded from combined training.
     "Vehicle": None,
-
     # Military Vehicles Object Detection
     "civ_hel": None,
     "drone": "drone",
@@ -58,7 +56,6 @@ LABEL_MAP: dict[str, str | None] = {
     "mil_helicopter": "military_helicopter",
     "stealth": "military_aircraft",
     "tech_vehicle": None,
-
     # Military Object Detection
     "Aircraft": "military_aircraft",
     "Drone": "drone",
