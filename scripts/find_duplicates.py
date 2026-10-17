@@ -212,10 +212,14 @@ def _find_yaml(dataset_root: Path) -> Path | None:
     for candidate in preferred:
         if candidate.is_file():
             return candidate
-    remaining = sorted(
-        [*dataset_root.glob("*.yaml"), *dataset_root.glob("*.yml")],
-        key=lambda p: p.name.lower(),
-    ) if dataset_root.is_dir() else []
+    remaining = (
+        sorted(
+            [*dataset_root.glob("*.yaml"), *dataset_root.glob("*.yml")],
+            key=lambda p: p.name.lower(),
+        )
+        if dataset_root.is_dir()
+        else []
+    )
     return remaining[0] if remaining else None
 
 
@@ -343,7 +347,9 @@ def discover_images(repo_root: Path, data_root: Path) -> tuple[list[ImageRecord]
             except (OSError, ValueError, yaml.YAMLError) as exc:
                 warnings.append(f"Could not read {yaml_path}: {exc}; using conventional folders.")
         else:
-            warnings.append(f"No data.yaml/data.yml found under {dataset_root}; using conventional folders.")
+            warnings.append(
+                f"No data.yaml/data.yml found under {dataset_root}; using conventional folders."
+            )
 
         split_dirs = _resolve_split_dirs(dataset_name, dataset_root, yaml_path, config, repo_root)
         if not split_dirs:
@@ -434,9 +440,7 @@ def build_components(
     for hash_value in unique_hashes:
         for candidate, _distance in tree.query(hash_value, threshold):
             if candidate > hash_value:
-                union_find.union(
-                    hash_representatives[hash_value], hash_representatives[candidate]
-                )
+                union_find.union(hash_representatives[hash_value], hash_representatives[candidate])
 
     components_by_root: dict[int, list[int]] = defaultdict(list)
     for index in range(len(records)):
@@ -504,7 +508,9 @@ def create_review_sheets(
     sample_count: int,
     seed: int,
 ) -> list[tuple[str, int, str]]:
-    duplicate_groups = [(group_id, members) for group_id, members in identified_groups if len(members) > 1]
+    duplicate_groups = [
+        (group_id, members) for group_id, members in identified_groups if len(members) > 1
+    ]
     sample_size = min(max(sample_count, 0), len(duplicate_groups))
     sampled = random.Random(seed).sample(duplicate_groups, sample_size) if sample_size else []
 
@@ -596,7 +602,10 @@ def main() -> int:
     for warning in discovery_warnings:
         print(f"WARNING: {warning}")
     if not records:
-        print("ERROR: no image files were found. Check data-root and each dataset's data.yaml.", file=sys.stderr)
+        print(
+            "ERROR: no image files were found. Check data-root and each dataset's data.yaml.",
+            file=sys.stderr,
+        )
         return 2
 
     print(f"Computing perceptual hashes for {len(records):,} images...")
