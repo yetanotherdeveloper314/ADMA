@@ -19,9 +19,10 @@ import random
 import sys
 import textwrap
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, Iterable
+from typing import Any
 
 try:
     import imagehash
@@ -60,7 +61,7 @@ class ImageRecord:
 @dataclass
 class BKNode:
     value: int
-    children: dict[int, "BKNode"]
+    children: dict[int, BKNode]
 
 
 class BKTree:
@@ -280,7 +281,7 @@ def _resolve_split_dirs(
             if value_path is not None and value_path.is_absolute():
                 candidates.append(value_path)
             else:
-                candidates.extend((root / value for root in roots))
+                candidates.extend(root / value for root in roots)
             selected = next((candidate for candidate in candidates if candidate.is_dir()), None)
             if selected is not None:
                 resolved.append((canonical_split, selected))
