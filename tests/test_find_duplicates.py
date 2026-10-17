@@ -10,7 +10,7 @@ class BKTreeTests(unittest.TestCase):
     def test_radius_query_uses_hamming_distance(self) -> None:
         tree = BKTree()
         tree.add(0b0)
-        tree.add(0b11111)   # distance 5 from 0
+        tree.add(0b11111)  # distance 5 from 0
         tree.add(0b111111)  # distance 6 from 0
 
         found = {value: distance for value, distance in tree.query(0, radius=5)}
