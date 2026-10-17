@@ -37,24 +37,26 @@ DATASETS: dict[str, dict] = {
     },
 }
 
-# Maps every raw label (across all datasets) to a clean, consistent name.
-# Set to None to drop that class entirely (non-military / civilian).
 LABEL_MAP: dict[str, str | None] = {
-    # tank_images
+    # Tank Images
     "person": None,
     "tank": "tank",
-    # military_vehicles
-    "Vehicle": "military_vehicle",
-    # military_vehicles_obj
+    "hong-di-chuyen": None,
+    "hong-hoa-luc": None,
+    "hong-hoan-toan": None,
+    # Military Vehicle Detection
+    # This dataset will be excluded from combined training.
+    "Vehicle": None,
+    # Military Vehicles Object Detection
     "civ_hel": None,
     "drone": "drone",
-    "jet": "fighter_jet",
-    "land": "armored_vehicle",
+    "jet": "military_aircraft",
+    "land": None,
     "large_mil_plane": "military_aircraft",
     "mil_helicopter": "military_helicopter",
-    "stealth": "stealth_aircraft",
-    "tech_vehicle": "military_vehicle",
-    # military_objects
+    "stealth": "military_aircraft",
+    "tech_vehicle": None,
+    # Military Object Detection
     "Aircraft": "military_aircraft",
     "Drone": "drone",
     "Helicopter": "military_helicopter",
@@ -64,5 +66,12 @@ LABEL_MAP: dict[str, str | None] = {
     "Tank": "tank",
     "Truck": "military_truck",
     "Warship": "warship",
-    "Weapons": "weapons",
+    "Weapons": None,
+}
+
+COMBINED_DATASET_EXCLUSIONS: dict[str, str] = {
+    "military_vehicles": (
+        "The generic Vehicle class cannot be reliably mapped to the "
+        "approved taxonomy without verifying or relabeling annotations."
+    ),
 }
