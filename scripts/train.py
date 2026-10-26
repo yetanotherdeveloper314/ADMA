@@ -8,9 +8,12 @@ Usage:
   python scripts/train.py --dataset military_vehicles --epochs 150 --model-size m
   python scripts/train.py --dataset all --epochs 150
   python scripts/train.py --data path/to/custom/data.yaml --name my_model
+  python scripts/train.py --dataset all --seed 42  (seed defaults to 42)
 """
 
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +40,20 @@ from adma.datasets import (
 )
 
 COMBINED_DIR = Path(COMBINED_DATA_DIR)
+DEFAULT_TRAIN_SEED = 42
+
+
+def _io_path(path: Path) -> str:
+    path_str = str(path)
+    if sys.platform != "win32":
+        return path_str
+
+    absolute_path = os.path.abspath(path_str)
+    if len(absolute_path) < 240:
+        return path_str
+    if absolute_path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute_path[2:]
+    return "\\\\?\\" + absolute_path
 
 
 def resolve_data_yaml(dataset_name: str) -> Path:
@@ -71,7 +88,9 @@ def _load_dataset_config(name: str, info: dict) -> dict | None:
     with open(yaml_path) as f:
         cfg = yaml.safe_load(f)
 
-    base = Path(cfg.get("path", str(loc.resolve())))
+    # Roboflow YAMLs can contain an absolute path from the machine that
+    # downloaded them; the registry location is the local source of truth.
+    base = loc.resolve()
     train_dir = base / cfg["train"]
     val_dir = base / cfg["val"]
 
@@ -144,15 +163,15 @@ def _remap_labels_for_dataset(
             print(f"    [WARN] {split} images missing for '{ds_name}', skipping")
             continue
 
-        for img in src_imgs.iterdir():
+        for image_index, img in enumerate(sorted(src_imgs.iterdir())):
             if img.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
-                dst = dst_imgs / img.name
-                if not dst.exists():
-                    shutil.copy2(str(img), str(dst))
+                output_stem = f"{image_index:06d}"
+                dst = dst_imgs / f"{output_stem}{img.suffix.lower()}"
+                shutil.copy2(_io_path(img), str(dst))
 
                 lbl_src = src_lbls / (img.stem + ".txt")
-                lbl_dst = dst_lbls / (img.stem + ".txt")
-                if lbl_src.exists() and not lbl_dst.exists():
+                lbl_dst = dst_lbls / f"{output_stem}.txt"
+                if os.path.isfile(_io_path(lbl_src)):
                     _rewrite_label_file(lbl_src, lbl_dst, old_to_new)
 
     train_out = output_base / "images" / "train" / ds_name
@@ -161,7 +180,8 @@ def _remap_labels_for_dataset(
 
 
 def _rewrite_label_file(src: Path, dst: Path, mapping: dict[int, int | None]) -> None:
-    lines = src.read_text().strip().splitlines()
+    with open(_io_path(src), encoding="utf-8") as label_file:
+        lines = label_file.read().strip().splitlines()
     new_lines = []
     for line in lines:
         parts = line.split()
@@ -173,7 +193,8 @@ def _rewrite_label_file(src: Path, dst: Path, mapping: dict[int, int | None]) ->
             continue
         parts[0] = str(new_cls)
         new_lines.append(" ".join(parts))
-    dst.write_text("\n".join(new_lines) + "\n" if new_lines else "")
+    with open(dst, "w", encoding="utf-8") as label_file:
+        label_file.write("\n".join(new_lines) + "\n" if new_lines else "")
 
 
 def _merge_all_datasets() -> Path:
@@ -247,6 +268,18 @@ def model_output_name(dataset_name: str, model_size: str, custom_name: str | Non
     return f"{dataset_name}_{model_size}"
 
 
+def _git_commit() -> str:
+    repo_root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def train(
     data_yaml: Path,
     output_name: str,
@@ -255,43 +288,96 @@ def train(
     imgsz: int = TRAIN_IMAGE_SIZE,
     model_size: str = DEFAULT_MODEL_SIZE,
     workers: int = TRAIN_WORKERS,
+    seed: int = DEFAULT_TRAIN_SEED,
 ) -> Path:
+    import mlflow
+
+    resolved_data_yaml = data_yaml.resolve()
+    git_commit = _git_commit()
+
     print("=" * 60)
     print("  MILITARY ASSET DETECTION -- TRAINING")
     print("=" * 60)
     print(f"  Model       : YOLOv8{model_size}")
-    print(f"  Dataset     : {data_yaml.resolve()}")
+    print(f"  Dataset     : {resolved_data_yaml}")
     print(f"  Output name : {output_name}")
     print(f"  Epochs      : {epochs}")
     print(f"  Batch size  : {batch}")
     print(f"  Image size  : {imgsz}")
     print(f"  Workers     : {workers}")
+    print(f"  Seed        : {seed}")
     print("=" * 60)
 
     base_model = f"yolov8{model_size}.pt"
     model = YOLO(base_model)
 
-    model.train(
-        data=str(data_yaml),
-        epochs=epochs,
-        batch=batch,
-        imgsz=imgsz,
-        project=RUNS_DIR,
-        name=output_name,
-        exist_ok=True,
-        patience=TRAIN_PATIENCE,
-        save=True,
-        plots=True,
-        verbose=True,
-        workers=workers,
-    )
+    def log_training_metadata(trainer) -> None:
+        if mlflow.active_run() is None:
+            raise RuntimeError("Ultralytics did not start an active MLflow run")
+        mlflow.log_params(
+            {
+                "data_yaml": str(resolved_data_yaml),
+                "seed": seed,
+                "git_commit": git_commit,
+            }
+        )
 
-    run_best = _find_best_pt(RUNS_DIR, output_name)
+    model.add_callback("on_train_start", log_training_metadata)
+    previous_keep_run_active = os.environ.get("MLFLOW_KEEP_RUN_ACTIVE")
+    os.environ["MLFLOW_KEEP_RUN_ACTIVE"] = "True"
 
-    models_dir = Path(MODELS_DIR) / output_name
-    models_dir.mkdir(parents=True, exist_ok=True)
-    dest = models_dir / "best.pt"
-    shutil.copy2(str(run_best), str(dest))
+    try:
+        model.train(
+            data=str(resolved_data_yaml),
+            epochs=epochs,
+            batch=batch,
+            imgsz=imgsz,
+            project=RUNS_DIR,
+            name=output_name,
+            exist_ok=True,
+            patience=TRAIN_PATIENCE,
+            save=True,
+            plots=True,
+            verbose=True,
+            workers=workers,
+            seed=seed,
+        )
+
+        run_best = _find_best_pt(RUNS_DIR, output_name)
+
+        models_dir = Path(MODELS_DIR) / output_name
+        models_dir.mkdir(parents=True, exist_ok=True)
+        dest = models_dir / "best.pt"
+        shutil.copy2(str(run_best), str(dest))
+
+        evaluation_dir = Path(RUNS_DIR) / "eval" / output_name
+        evaluator_script = Path(__file__).resolve().with_name("evaluator.py")
+        subprocess.run(
+            [
+                sys.executable,
+                str(evaluator_script),
+                "--data",
+                str(resolved_data_yaml),
+                "--model",
+                str(run_best.resolve()),
+                "--output-dir",
+                str(evaluation_dir),
+            ],
+            cwd=Path(__file__).resolve().parent.parent,
+            check=True,
+        )
+        metrics_path = evaluation_dir / "metrics.json"
+        if not metrics_path.is_file():
+            raise FileNotFoundError(f"Evaluator did not create the expected report: {metrics_path}")
+        mlflow.log_artifact(str(metrics_path), artifact_path="evaluation")
+    finally:
+        try:
+            mlflow.end_run()
+        finally:
+            if previous_keep_run_active is None:
+                os.environ.pop("MLFLOW_KEEP_RUN_ACTIVE", None)
+            else:
+                os.environ["MLFLOW_KEEP_RUN_ACTIVE"] = previous_keep_run_active
 
     print()
     print("=" * 60)
@@ -299,9 +385,9 @@ def train(
     print("=" * 60)
     print(f"  Model saved to    : {dest.resolve()}")
     print(f"  Training plots at : {run_best.parent.parent.resolve()}")
+    print(f"  Evaluation report : {metrics_path.resolve()}")
     print()
     print("  Next steps:")
-    print(f"    python scripts/evaluator.py --data {data_yaml} --model {output_name}")
     print(f"    python scripts/test_detection.py --image YOUR_IMAGE.jpg --model {output_name}")
     print(f"    python -m adma.app   (select '{output_name}' from the dropdown)")
     print("=" * 60)
@@ -337,6 +423,12 @@ if __name__ == "__main__":
     parser.add_argument("--imgsz", type=int, default=TRAIN_IMAGE_SIZE)
     parser.add_argument("--workers", type=int, default=TRAIN_WORKERS)
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_TRAIN_SEED,
+        help=f"Random seed for reproducible training (default: {DEFAULT_TRAIN_SEED})",
+    )
+    parser.add_argument(
         "--model-size",
         default=DEFAULT_MODEL_SIZE,
         choices=["n", "s", "m", "l", "x"],
@@ -353,4 +445,13 @@ if __name__ == "__main__":
             raise FileNotFoundError(f"Data YAML not found: {yaml_path}")
         out_name = args.name or yaml_path.stem
 
-    train(yaml_path, out_name, args.epochs, args.batch, args.imgsz, args.model_size, args.workers)
+    train(
+        yaml_path,
+        out_name,
+        args.epochs,
+        args.batch,
+        args.imgsz,
+        args.model_size,
+        args.workers,
+        args.seed,
+    )
