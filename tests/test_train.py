@@ -50,19 +50,14 @@ def test_merge_all_datasets_uses_local_paths_and_rebuilds_splits(tmp_path, monke
     result = train._merge_all_datasets()
 
     assert result == output / "data.yaml"
-    assert sorted(path.name for path in (output / "images" / "train" / "military_objects").iterdir()) == [
-        "000000.jpg"
-    ]
-    assert sorted(path.name for path in (output / "images" / "val" / "military_objects").iterdir()) == [
-        "000000.jpg"
-    ]
-    assert (
-        output / "labels" / "train" / "military_objects" / "000000.txt"
-    ).read_text() == (
-        "1 0.5 0.5 0.25 0.25\n"
-        "0 0.5 0.5 0.25 0.25\n"
-        "2 0.5 0.5 0.25 0.25\n"
-        "3 0.5 0.5 0.25 0.25\n"
+    assert sorted(
+        path.name for path in (output / "images" / "train" / "military_objects").iterdir()
+    ) == ["000000.jpg"]
+    assert sorted(
+        path.name for path in (output / "images" / "val" / "military_objects").iterdir()
+    ) == ["000000.jpg"]
+    assert (output / "labels" / "train" / "military_objects" / "000000.txt").read_text() == (
+        "1 0.5 0.5 0.25 0.25\n0 0.5 0.5 0.25 0.25\n2 0.5 0.5 0.25 0.25\n3 0.5 0.5 0.25 0.25\n"
     )
 
 
@@ -95,9 +90,7 @@ def _prepare_training(tmp_path, monkeypatch, evaluator_runner=None):
     mlflow = SimpleNamespace(
         active_run=lambda: active["run"],
         log_params=lambda params: events.append(("params", params)),
-        log_artifact=lambda path, artifact_path: events.append(
-            ("artifact", path, artifact_path)
-        ),
+        log_artifact=lambda path, artifact_path: events.append(("artifact", path, artifact_path)),
         end_run=lambda: events.append(("end_run",)),
     )
     monkeypatch.setitem(__import__("sys").modules, "mlflow", mlflow)
@@ -127,9 +120,7 @@ def _prepare_training(tmp_path, monkeypatch, evaluator_runner=None):
     return events, data_yaml, run_best
 
 
-def test_train_logs_metadata_evaluates_checkpoint_and_closes_mlflow(
-    tmp_path, monkeypatch
-):
+def test_train_logs_metadata_evaluates_checkpoint_and_closes_mlflow(tmp_path, monkeypatch):
     events, data_yaml, run_best = _prepare_training(tmp_path, monkeypatch)
 
     result = train.train(data_yaml, "experiment", seed=123)
@@ -159,9 +150,7 @@ def test_train_closes_mlflow_when_evaluator_fails(tmp_path, monkeypatch):
     def fail_evaluator(command, **kwargs):
         raise subprocess.CalledProcessError(1, command)
 
-    events, data_yaml, _ = _prepare_training(
-        tmp_path, monkeypatch, evaluator_runner=fail_evaluator
-    )
+    events, data_yaml, _ = _prepare_training(tmp_path, monkeypatch, evaluator_runner=fail_evaluator)
 
     with pytest.raises(subprocess.CalledProcessError):
         train.train(data_yaml, "experiment")
