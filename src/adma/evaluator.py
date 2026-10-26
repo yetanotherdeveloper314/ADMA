@@ -140,6 +140,8 @@ class EvaluationReport:
     num_gt: int
     num_pred: int
     latency: LatencyStats | None = field(default=None)
+    per_source: dict[str, dict] = field(default_factory=dict)
+    per_size: dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -169,6 +171,8 @@ class EvaluationReport:
                 "labels": self.confusion_labels,
                 "matrix": self.confusion_matrix.tolist(),
             },
+            "per_source": self.per_source,
+            "per_size": self.per_size,
         }
 
 
@@ -639,6 +643,219 @@ def precision_recall_f1(tp: int, num_pred: int, num_gt: int) -> tuple[float, flo
     return precision, recall, f1
 
 
+# COCO-style bounding-box area thresholds, measured in pixels squared.
+SMALL_AREA_MAX = 32**2
+MEDIUM_AREA_MAX = 96**2
+
+SIZE_GROUPS = ("small", "medium", "large")
+
+
+def _box_area_pixels(
+    bbox: tuple[float, float, float, float],
+    image_size: tuple[int, int],
+) -> float:
+    """Calculate the area of a normalized xyxy box in pixel squared."""
+    width, height = image_size
+    x1, y1, x2, y2 = bbox
+
+    box_width = max(0.0, x2 - x1) * width
+    box_height = max(0.0, y2 - y1) * height
+    return box_width * box_height
+
+
+def _size_group(area: float) -> str:
+    """Assign a pixel area to a COCO-style object-size group."""
+    if area < SMALL_AREA_MAX:
+        return "small"
+    if area < MEDIUM_AREA_MAX:
+        return "medium"
+    return "large"
+
+
+def _subset_dataset(
+    dataset: EvalDataset,
+    image_ids: set[str],
+    ground_truth: list[Detection] | None = None,
+) -> EvalDataset:
+    """Create a dataset subset without changing its class-name mapping."""
+    return EvalDataset(
+        class_names=dataset.class_names.copy(),
+        images={
+            image_id: path for image_id, path in dataset.images.items() if image_id in image_ids
+        },
+        ground_truth=(
+            list(ground_truth)
+            if ground_truth is not None
+            else [gt for gt in dataset.ground_truth if gt.image_id in image_ids]
+        ),
+        root=dataset.root,
+    )
+
+
+def _size_area_range(size_group: str) -> tuple[float, float]:
+    """Return COCO-style pixel-area bounds for a size group."""
+    ranges = {
+        "small": (0.0, float(SMALL_AREA_MAX)),
+        "medium": (float(SMALL_AREA_MAX), float(MEDIUM_AREA_MAX)),
+        "large": (float(MEDIUM_AREA_MAX), float("inf")),
+    }
+    try:
+        return ranges[size_group]
+    except KeyError as exc:
+        raise ValueError(f"Unknown size group: {size_group!r}") from exc
+
+
+def _compute_size_metrics(
+    dataset: EvalDataset,
+    predictions: list[Detection],
+) -> dict[str, dict]:
+    """Compute size-specific AP with COCO-style ignored detections."""
+    image_sizes = {image_id: image_size(path) for image_id, path in dataset.images.items()}
+
+    gt_areas = [_box_area_pixels(gt.bbox, image_sizes[gt.image_id]) for gt in dataset.ground_truth]
+    pred_areas = [_box_area_pixels(pred.bbox, image_sizes[pred.image_id]) for pred in predictions]
+
+    results: dict[str, dict] = {}
+
+    for size_group in SIZE_GROUPS:
+        area_min, area_max = _size_area_range(size_group)
+
+        def in_range(area: float) -> bool:
+            return area_min <= area <= area_max
+
+        group_gt = [
+            (gt, area) for gt, area in zip(dataset.ground_truth, gt_areas) if in_range(area)
+        ]
+        num_gt = len(group_gt)
+
+        # Index ground truth by class and image. Keep out-of-range ground
+        # truths available for matching, but mark them as ignored.
+        gt_by_class_image: dict[int, dict[str, list[tuple[Detection, bool]]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for gt in dataset.ground_truth:
+            area = _box_area_pixels(gt.bbox, image_sizes[gt.image_id])
+            gt_by_class_image[gt.class_id][gt.image_id].append((gt, not in_range(area)))
+
+        pred_by_class_image: dict[int, dict[str, list[tuple[Detection, float]]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for pred, area in zip(predictions, pred_areas):
+            pred_by_class_image[pred.class_id][pred.image_id].append((pred, area))
+
+        class_aps: list[list[float]] = []
+        for class_id in sorted(dataset.class_names):
+            class_gt_count = sum(
+                not ignored
+                for image_gts in gt_by_class_image.get(class_id, {}).values()
+                for _, ignored in image_gts
+            )
+            if class_gt_count == 0:
+                continue
+
+            class_predictions = [
+                item
+                for image_preds in pred_by_class_image.get(class_id, {}).values()
+                for item in image_preds
+            ]
+            class_predictions.sort(key=lambda item: -item[0].score)
+
+            # Store true-positive and ignore flags separately for each IoU.
+            tp_by_iou = np.zeros((len(class_predictions), len(IOU_THRESHOLDS)), dtype=bool)
+            ignore_by_iou = np.zeros_like(tp_by_iou)
+
+            matched: dict[float, dict[str, set[int]]] = {
+                float(threshold): defaultdict(set) for threshold in IOU_THRESHOLDS
+            }
+
+            for pred_index, (pred, pred_area) in enumerate(class_predictions):
+                image_gts = gt_by_class_image.get(class_id, {}).get(pred.image_id, [])
+                if not image_gts:
+                    # With no GT in this image/class, out-of-range
+                    # predictions are ignored; in-range ones are false positives.
+                    if not in_range(pred_area):
+                        ignore_by_iou[pred_index, :] = True
+                    continue
+
+                gt_boxes = [gt.bbox for gt, _ in image_gts]
+                ious = box_iou([pred.bbox], gt_boxes)[0]
+
+                # COCO sorts non-ignored GT first. Prefer an in-range GT
+                # when IoUs tie; each regular GT can be matched only once.
+                order = sorted(
+                    range(len(image_gts)),
+                    key=lambda j: image_gts[j][1],
+                )
+
+                for threshold_index, threshold in enumerate(IOU_THRESHOLDS):
+                    used = matched[float(threshold)][pred.image_id]
+                    best_gt_index = None
+
+                    # Prefer an eligible (in-range) ground truth first.
+                    for ignored_status in (False, True):
+                        candidates = [
+                            j
+                            for j in order
+                            if image_gts[j][1] is ignored_status
+                            and j not in used
+                            and ious[j] >= threshold
+                        ]
+                        if candidates:
+                            best_gt_index = max(candidates, key=lambda j: ious[j])
+                            break
+                    if best_gt_index is not None:
+                        _gt, gt_ignored = image_gts[best_gt_index]
+                        used.add(best_gt_index)
+
+                        if gt_ignored:
+                            ignore_by_iou[pred_index, threshold_index] = True
+                        else:
+                            tp_by_iou[pred_index, threshold_index] = True
+                    elif not in_range(pred_area):
+                        ignore_by_iou[pred_index, threshold_index] = True
+            aps = []
+            for threshold_index in range(len(IOU_THRESHOLDS)):
+                keep = ~ignore_by_iou[:, threshold_index]
+                ap = average_precision(
+                    tp_by_iou[keep, threshold_index],
+                    class_gt_count,
+                )
+                aps.append(0.0 if ap is None else ap)
+            class_aps.append(aps)
+
+        if class_aps:
+            mean_aps = np.mean(np.asarray(class_aps), axis=0)
+            ap50_95 = float(mean_aps.mean())
+            ap50 = float(mean_aps[np.flatnonzero(IOU_THRESHOLDS == 0.5)[0]])
+            ap75 = float(mean_aps[np.flatnonzero(IOU_THRESHOLDS == 0.75)[0]])
+        else:
+            ap50_95 = ap50 = ap75 = 0.0
+
+        results[size_group] = {
+            "AP50-95": ap50_95,
+            "AP50": ap50,
+            "AP75": ap75,
+            "ground_truth": num_gt,
+        }
+
+    return results
+
+
+def _report_summary(report: EvaluationReport) -> dict:
+    """Return the principal metrics and counts for a breakdown."""
+    return {
+        "mAP50-95": report.map50_95,
+        "mAP50": report.map50,
+        "mAP75": report.map75,
+        "precision": report.precision,
+        "recall": report.recall,
+        "f1": report.f1,
+        "images": report.num_images,
+        "ground_truth": report.num_gt,
+        "predictions": report.num_pred,
+    }
+
+
 def evaluate(
     dataset: EvalDataset,
     predictions: list[Detection],
@@ -646,6 +863,7 @@ def evaluate(
     iou_threshold: float = 0.5,
     max_det: int = DEFAULT_MAX_DET,
     latency: LatencyStats | None = None,
+    _compute_breakdowns: bool = True,
 ) -> EvaluationReport:
     """
     Score ``predictions`` against ``dataset``. At most ``max_det``
@@ -726,7 +944,7 @@ def evaluate(
         best_f1, best_conf = 0.0, 0.0
 
     labels, matrix = confusion_matrix(dataset, predictions, conf_threshold, iou_threshold)
-    return EvaluationReport(
+    report = EvaluationReport(
         per_class=per_class,
         map50_95=mean("ap50_95"),
         map50=mean("ap50"),
@@ -746,6 +964,34 @@ def evaluate(
         num_pred=len(predictions),
         latency=latency,
     )
+    if _compute_breakdowns:
+        sources = sorted(
+            {image_id.split("/", 1)[0] for image_id in dataset.images if "/" in image_id}
+        )
+
+        for source in sources:
+            source_ids = {
+                image_id for image_id in dataset.images if image_id.startswith(f"{source}/")
+            }
+
+            source_dataset = _subset_dataset(dataset, source_ids)
+            source_predictions = [
+                prediction for prediction in predictions if prediction.image_id in source_ids
+            ]
+
+            source_report = evaluate(
+                source_dataset,
+                source_predictions,
+                conf_threshold=conf_threshold,
+                iou_threshold=iou_threshold,
+                max_det=max_det,
+                _compute_breakdowns=False,
+            )
+
+            report.per_source[source] = _report_summary(source_report)
+        report.per_size = _compute_size_metrics(dataset, predictions)
+
+    return report
 
 
 def confusion_matrix(
@@ -880,6 +1126,37 @@ def format_report(report: EvaluationReport, top_confusions: int = 5) -> str:
             f"  Latency over {lat.images} images: mean {lat.mean_ms:.1f} ms, "
             f"median {lat.median_ms:.1f} ms, p95 {lat.p95_ms:.1f} ms ({lat.fps:.1f} FPS)",
         ]
+    if report.per_source:
+        lines += ["", "Per-source metrics:"]
+        lines.append(
+            f"  {'Source':<28}{'Images':>8}{'GT':>8}"
+            f"{'Pred':>8}{'mAP50-95':>12}{'mAP50':>9}{'mAP75':>9}"
+        )
+        for source, metrics in sorted(report.per_source.items()):
+            lines.append(
+                f"  {source[:27]:<28}"
+                f"{metrics['images']:>8}"
+                f"{metrics['ground_truth']:>8}"
+                f"{metrics['predictions']:>8}"
+                f"{metrics['mAP50-95']:>12.3f}"
+                f"{metrics['mAP50']:>9.3f}"
+                f"{metrics['mAP75']:>9.3f}"
+            )
+
+    if report.per_size:
+        lines += ["", "AP by object size:"]
+        lines.append(f"  {'Size':<12}{'Ground truth':>14}{'AP50-95':>12}{'AP50':>9}{'AP75':>9}")
+        for size_group in SIZE_GROUPS:
+            metrics = report.per_size.get(size_group)
+            if metrics is None:
+                continue
+            lines.append(
+                f"  {size_group:<12}"
+                f"{metrics['ground_truth']:>14}"
+                f"{metrics['AP50-95']:>12.3f}"
+                f"{metrics['AP50']:>9.3f}"
+                f"{metrics['AP75']:>9.3f}"
+            )
     return "\n".join(lines)
 
 
