@@ -4,13 +4,71 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_splits.py"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = REPO_ROOT / "scripts" / "make_splits.py"
+
+
+def _load_script():
+    spec = importlib.util.spec_from_file_location("make_splits", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["make_splits"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class MakeSplitsPolicyTests(unittest.TestCase):
+    def test_loads_real_repo_policy(self) -> None:
+        # Every other test writes its own datasets.py, so this is the one that
+        # catches constants missing from the real file.
+        policy = _load_script().load_policy(REPO_ROOT)
+        self.assertEqual(list(policy.target_classes), sorted(policy.target_classes))
+        self.assertIn("tank", policy.target_classes)
+        self.assertIn("military_vehicles", policy.excluded_datasets)
+
+    def test_ratios_apply_to_copied_images_not_held_ones(self) -> None:
+        make_splits = _load_script()
+        records = []
+        for index in range(100):
+            record = make_splits.SourceImage(
+                dataset="tank_images",
+                source_split="train",
+                image_path=Path(f"kept_{index}.jpg"),
+                image_root=Path("."),
+                labels_root=Path("."),
+                class_names=["tank"],
+                group_id=f"kept_{index}",
+                remapped_label_text="0 0.5 0.5 0.2 0.2\n",
+            )
+            record.classes.add("tank")
+            record.instance_counts["tank"] += 1
+            records.append(record)
+        # Three held images for every kept one, as when a source is excluded.
+        for index in range(300):
+            records.append(
+                make_splits.SourceImage(
+                    dataset="tank_images",
+                    source_split="train",
+                    image_path=Path(f"held_{index}.jpg"),
+                    image_root=Path("."),
+                    labels_root=Path("."),
+                    class_names=["tank"],
+                    group_id=f"held_{index}",
+                    review_reason="dataset_excluded_by_policy",
+                )
+            )
+        assignment = make_splits.assign_groups(
+            make_splits.group_records(records), seed=42, ratios=make_splits.RATIOS
+        )
+        kept = Counter(assignment[r.group_id] for r in records if r.included)
+        self.assertEqual(kept, Counter({"train": 70, "val": 15, "test": 15}))
 
 
 class MakeSplitsIntegrationTests(unittest.TestCase):
@@ -19,7 +77,7 @@ class MakeSplitsIntegrationTests(unittest.TestCase):
         (root / "src" / "adma" / "datasets.py").write_text(
             "LABEL_MAP = {'Tank': 'tank', 'Armored': 'armored_vehicle'}\n"
             "TARGET_CLASSES = ('armored_vehicle', 'tank')\n"
-            "EXCLUDED_DATASETS = frozenset()\n"
+            "COMBINED_DATASET_EXCLUSIONS = {}\n"
             "UNRESOLVED_LABELS = frozenset()\n"
             "NEGATIVE_REVIEW_CSV = 'data/negative_review.csv'\n",
             encoding="utf-8",
@@ -86,7 +144,7 @@ class MakeSplitsIntegrationTests(unittest.TestCase):
             policy_path.write_text(
                 "LABEL_MAP = {'Tank': 'tank'}\n"
                 "TARGET_CLASSES = ('armored_vehicle', 'tank')\n"
-                "EXCLUDED_DATASETS = frozenset()\n"
+                "COMBINED_DATASET_EXCLUSIONS = {}\n"
                 "UNRESOLVED_LABELS = frozenset()\n"
                 "NEGATIVE_REVIEW_CSV = 'data/negative_review.csv'\n",
                 encoding="utf-8",

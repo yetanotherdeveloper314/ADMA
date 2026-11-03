@@ -69,6 +69,10 @@ LABEL_MAP: dict[str, str | None] = {
     "Weapons": None,
 }
 
+# Class order (and so class ids) for combined datasets. Sorted, to match
+# scripts/train.py; adding a class shifts the ids of every class after it.
+TARGET_CLASSES: tuple[str, ...] = tuple(sorted({name for name in LABEL_MAP.values() if name}))
+
 COMBINED_DATASET_EXCLUSIONS: dict[str, str] = {
     "military_vehicles": (
         "The generic Vehicle class cannot be reliably mapped to the "
