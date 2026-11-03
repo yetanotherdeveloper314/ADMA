@@ -30,9 +30,11 @@ BOX_A = (0.1, 0.1, 0.3, 0.3)
 BOX_B = (0.6, 0.6, 0.9, 0.9)
 
 
-def make_dataset(ground_truth, image_ids=("img1",)):
-    images = {i: Path(f"/nonexistent/{i}.jpg") for i in image_ids}
-    return EvalDataset(NAMES, images, list(ground_truth), Path("/nonexistent"))
+def make_dataset(ground_truth, tmp_path, image_ids=("img1",)):
+    images = {i: tmp_path / Path(i).with_suffix(".jpg") for i in image_ids}
+    for image_path in images.values():
+        write_image(image_path)
+    return EvalDataset(NAMES, images, list(ground_truth), tmp_path)
 
 
 def gt(class_id, bbox, image_id="img1"):
@@ -95,8 +97,8 @@ def test_average_precision_edge_cases():
 # ------------------------------------------------------------------
 
 
-def test_perfect_predictions_score_one():
-    dataset = make_dataset([gt(0, BOX_A), gt(1, BOX_B)])
+def test_perfect_predictions_score_one(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A), gt(1, BOX_B)], tmp_path)
     report = evaluate(dataset, [pred(0, BOX_A, 0.9), pred(1, BOX_B, 0.8)])
 
     assert report.map50_95 == pytest.approx(1.0)
@@ -104,25 +106,25 @@ def test_perfect_predictions_score_one():
     assert (report.precision, report.recall, report.f1) == (1.0, 1.0, 1.0)
 
 
-def test_iou_dependent_ap():
+def test_iou_dependent_ap(tmp_path):
     # IoU 0.62 only counts at the 0.50, 0.55 and 0.60 thresholds.
-    dataset = make_dataset([gt(0, (0.0, 0.0, 1.0, 1.0))])
+    dataset = make_dataset([gt(0, (0.0, 0.0, 1.0, 1.0))], tmp_path)
     tank = evaluate(dataset, [pred(0, (0.0, 0.0, 0.62, 1.0), 0.9)]).per_class[0]
     assert tank.ap50 == pytest.approx(1.0)
     assert tank.ap75 == 0.0
     assert tank.ap50_95 == pytest.approx(0.3)
 
 
-def test_duplicate_detection_is_false_positive():
-    dataset = make_dataset([gt(0, BOX_A)])
+def test_duplicate_detection_is_false_positive(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A)], tmp_path)
     tank = evaluate(dataset, [pred(0, BOX_A, 0.9), pred(0, BOX_A, 0.8)]).per_class[0]
 
     assert (tank.tp, tank.fp, tank.fn) == (1, 1, 0)
     assert tank.ap50 == pytest.approx(1.0)
 
 
-def test_conf_threshold_only_affects_operating_metrics():
-    dataset = make_dataset([gt(0, BOX_A), gt(0, BOX_B)])
+def test_conf_threshold_only_affects_operating_metrics(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A), gt(0, BOX_B)], tmp_path)
     preds = [pred(0, BOX_A, 0.9), pred(0, BOX_B, 0.1)]
     tank = evaluate(dataset, preds, conf_threshold=0.5).per_class[0]
 
@@ -130,8 +132,8 @@ def test_conf_threshold_only_affects_operating_metrics():
     assert (tank.num_pred, tank.recall) == (1, 0.5)
 
 
-def test_class_without_ground_truth_is_excluded_from_means():
-    dataset = make_dataset([gt(0, BOX_A)])
+def test_class_without_ground_truth_is_excluded_from_means(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A)], tmp_path)
     report = evaluate(dataset, [pred(0, BOX_A, 0.9), pred(1, BOX_B, 0.9)])
     drone = report.per_class[1]
 
@@ -139,38 +141,38 @@ def test_class_without_ground_truth_is_excluded_from_means():
     assert report.map50_95 == pytest.approx(1.0)
 
 
-def test_missed_class_scores_zero():
-    dataset = make_dataset([gt(0, BOX_A), gt(1, BOX_B)])
+def test_missed_class_scores_zero(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A), gt(1, BOX_B)], tmp_path)
     report = evaluate(dataset, [pred(0, BOX_A, 0.9)])
 
     assert report.per_class[1].ap50 == 0.0
     assert report.map50 == pytest.approx(0.5)
 
 
-def test_max_det_keeps_highest_scores():
-    dataset = make_dataset([gt(0, BOX_A)])
+def test_max_det_keeps_highest_scores(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A)], tmp_path)
     preds = [pred(0, BOX_B, 0.5), pred(0, BOX_A, 0.4)]
 
     assert evaluate(dataset, preds, max_det=1).per_class[0].tp == 0
     assert evaluate(dataset, preds, max_det=2).per_class[0].tp == 1
 
 
-def test_best_f1_confidence():
-    dataset = make_dataset([gt(0, BOX_A)])
+def test_best_f1_confidence(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A)], tmp_path)
     report = evaluate(dataset, [pred(0, BOX_A, 0.8), pred(0, BOX_B, 0.3)])
 
     assert report.best_f1 == pytest.approx(1.0)
     assert 0.3 < report.best_f1_confidence <= 0.8
 
 
-def test_unknown_prediction_image_raises():
-    dataset = make_dataset([gt(0, BOX_A)])
+def test_unknown_prediction_image_raises(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A)], tmp_path)
     with pytest.raises(ValueError, match="not in the dataset"):
         evaluate(dataset, [pred(0, BOX_A, 0.9, image_id="other")])
 
 
-def test_confusion_matrix_cells():
-    dataset = make_dataset([gt(0, BOX_A), gt(1, BOX_B)])
+def test_confusion_matrix_cells(tmp_path):
+    dataset = make_dataset([gt(0, BOX_A), gt(1, BOX_B)], tmp_path)
     spurious = (0.4, 0.4, 0.5, 0.5)
     labels, matrix = confusion_matrix(dataset, [pred(1, BOX_A, 0.9), pred(0, spurious, 0.9)])
 
@@ -331,7 +333,7 @@ def test_predict_with_any_callable(combined_dataset):
 
 
 def test_save_report_writes_files(tmp_path):
-    dataset = make_dataset([gt(0, BOX_A)])
+    dataset = make_dataset([gt(0, BOX_A)], tmp_path)
     report = evaluate(dataset, [pred(0, BOX_A, 0.9)])
     paths = save_report(report, tmp_path / "out", {"model": "test"})
 
@@ -372,3 +374,67 @@ def test_cli_with_prediction_labels(combined_dataset, tmp_path):
     metrics = json.loads((out / "metrics.json").read_text())
     assert metrics["summary"]["mAP50-95"] == pytest.approx(1.0)
     assert metrics["counts"] == {"images": 3, "ground_truth": 2, "predictions": 2}
+
+
+def test_per_source_reports_perfect_and_missed_sources(tmp_path):
+    dataset = make_dataset(
+        [
+            gt(0, BOX_A, image_id="source_a/img1"),
+            gt(0, BOX_A, image_id="source_b/img1"),
+        ],
+        tmp_path,
+        image_ids=("source_a/img1", "source_b/img1"),
+    )
+    predictions = [
+        pred(0, BOX_A, 0.9, image_id="source_a/img1"),
+    ]
+
+    report = evaluate(dataset, predictions)
+
+    assert report.per_source["source_a"]["mAP50"] == pytest.approx(1.0)
+    assert report.per_source["source_b"]["mAP50"] == pytest.approx(0.0)
+    assert report.per_source["source_a"]["recall"] == pytest.approx(1.0)
+    assert report.per_source["source_b"]["recall"] == pytest.approx(0.0)
+
+
+def test_compute_size_metrics_perfect_small_box(tmp_path):
+    from adma.evaluator import _compute_size_metrics
+
+    image_path = tmp_path / "small.jpg"
+    write_image(image_path, size=(100, 100))
+
+    dataset = EvalDataset(
+        class_names=NAMES,
+        images={"img1": image_path},
+        ground_truth=[gt(0, (0.1, 0.1, 0.2, 0.2))],
+        root=tmp_path,
+    )
+    predictions = [pred(0, (0.1, 0.1, 0.2, 0.2), 0.99)]
+
+    result = _compute_size_metrics(dataset, predictions)
+
+    assert result["small"]["ground_truth"] == 1
+    assert result["small"]["AP50"] == 1.0
+    assert result["small"]["AP50-95"] == 1.0
+    assert result["medium"]["ground_truth"] == 0
+    assert result["large"]["ground_truth"] == 0
+
+
+def test_compute_size_metrics_missed_small_box(tmp_path):
+    from adma.evaluator import _compute_size_metrics
+
+    image_path = tmp_path / "small.jpg"
+    write_image(image_path, size=(100, 100))
+
+    dataset = EvalDataset(
+        class_names=NAMES,
+        images={"img1": image_path},
+        ground_truth=[gt(0, (0.1, 0.1, 0.2, 0.2))],
+        root=tmp_path,
+    )
+
+    result = _compute_size_metrics(dataset, [])
+
+    assert result["small"]["ground_truth"] == 1
+    assert result["small"]["AP50"] == 0.0
+    assert result["small"]["AP50-95"] == 0.0
