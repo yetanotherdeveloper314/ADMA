@@ -8,9 +8,10 @@ The duplicate CSV must cover every source image. Images in a duplicate group are
 assigned to the same split, including when that group spans source datasets.
 Source labels are normalized through ``src/adma/datasets.py``. Images with
 missing/invalid labels, unknown or unresolved labels, or unapproved empty labels
-are reported to ``label_review.csv`` and not copied. The existing policy's
-``EXCLUDED_DATASETS`` is honored; groups from excluded sources are still used
-when enforcing duplicate-group boundaries.
+are reported to ``label_review.csv`` and not copied. The policy's
+``COMBINED_DATASET_EXCLUSIONS`` is honored; groups from excluded sources are
+still used when enforcing duplicate-group boundaries. The 70/15/15 ratios apply
+to the images that are copied, not to the images held for review.
 
 By default, an existing output directory is never overwritten. To rebuild it,
 use ``--force-rebuild``. If the proposed test path list differs from the saved
@@ -95,8 +96,8 @@ class Group:
 
     def __post_init__(self) -> None:
         for record in self.records:
-            # Split ratios are based on the complete source pool, including images later held
-            # for review by the approved label policy. This also assigns excluded-source groups.
+            # per_dataset counts every image, including held ones; split ratios use
+            # eligible_per_dataset so held images don't take val/test places.
             self.per_dataset[record.dataset] += 1
             if not record.included:
                 continue
@@ -151,14 +152,16 @@ def load_policy(repo_root: Path) -> Policy:
         raise ImportError(f"Could not load label policy from {policy_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    required = ("LABEL_MAP", "TARGET_CLASSES")
+    required = ("LABEL_MAP", "TARGET_CLASSES", "COMBINED_DATASET_EXCLUSIONS")
     missing = [name for name in required if not hasattr(module, name)]
     if missing:
         raise ValueError(f"{policy_path} is missing required constants: {', '.join(missing)}")
+    # UNRESOLVED_LABELS and NEGATIVE_REVIEW_CSV are optional: by default no label is
+    # unresolved and no empty-label image is approved as a negative.
     return Policy(
         label_map=dict(module.LABEL_MAP),
         target_classes=tuple(module.TARGET_CLASSES),
-        excluded_datasets=frozenset(getattr(module, "EXCLUDED_DATASETS", ())),
+        excluded_datasets=frozenset(module.COMBINED_DATASET_EXCLUSIONS),
         unresolved_labels=frozenset(getattr(module, "UNRESOLVED_LABELS", ())),
         negative_review_csv=str(getattr(module, "NEGATIVE_REVIEW_CSV", "data/negative_review.csv")),
     )
@@ -596,7 +599,7 @@ def _assignment_loss(
     class_counts: dict[tuple[str, str, str], int] = defaultdict(int)
     for group_id, split in assignment.items():
         group = included_by_group[group_id]
-        for dataset, count in group.per_dataset.items():
+        for dataset, count in group.eligible_per_dataset.items():
             image_counts[(dataset, split)] += count
         for (dataset, class_name), count in group.per_dataset_class_instances.items():
             class_counts[(dataset, class_name, split)] += count
@@ -624,12 +627,13 @@ def assign_groups(groups: list[Group], seed: int, ratios: dict[str, float]) -> d
         raise ValueError("No images have eligible labels under the approved taxonomy policy.")
     included_by_group = {group.group_id: group for group in groups}
 
-    # Balance every source's entire image pool, not merely the subset that survives label review.
+    # Balance only the images that will be copied. Held images placed last would
+    # otherwise fill the val/test targets and leave almost no labeled images there.
     dataset_totals: Counter[str] = Counter()
     class_totals: Counter[tuple[str, str]] = Counter()
     class_group_ids: dict[str, set[str]] = defaultdict(set)
     for group in groups:
-        dataset_totals.update(group.per_dataset)
+        dataset_totals.update(group.eligible_per_dataset)
         class_totals.update(group.per_dataset_class_instances)
         for class_name in group.classes:
             class_group_ids[class_name].add(group.group_id)
