@@ -26,6 +26,12 @@ optional = true
 [tool.poetry.group.dataset-download.dependencies]
 roboflow = ">=1.1.0"
 
+[tool.poetry.group.vlm]
+optional = true
+
+[tool.poetry.group.vlm.dependencies]
+ollama = "^0.6.3"
+
 [tool.poetry.scripts]
 adma-app = "adma.app:main"
 
