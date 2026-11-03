@@ -34,3 +34,7 @@ models/
 
 # Gradio
 flagged/
+
+# Local MLflow experiment data
+mlruns/
+mlflow.db
