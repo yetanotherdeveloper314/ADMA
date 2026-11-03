@@ -22,6 +22,19 @@ jobs:
       - name: Install dependencies
         run: poetry lock && poetry install --with dev
 
+      # The PyPI torch wheel is the CUDA build; importing it on a GPU-less runner
+      # preloads the NVIDIA libraries and segfaults at random. Tests only need CPU.
+      - name: Switch torch to the CPU build
+        run: |
+          TORCH=$(poetry run pip show torch | awk '/^Version:/ {print $2}')
+          VISION=$(poetry run pip show torchvision | awk '/^Version:/ {print $2}')
+          poetry run pip list --format=freeze | grep -iE '^(nvidia-|triton=)' | cut -d= -f1 \
+            | xargs -r poetry run pip uninstall -y
+          poetry run pip install --force-reinstall --no-deps \
+            --index-url https://download.pytorch.org/whl/cpu \
+            "torch==$TORCH" "torchvision==$VISION"
+          poetry run python -c "import torch; assert torch.version.cuda is None, torch.version.cuda; print('torch', torch.__version__)"
+
       - name: Ruff lint
         run: poetry run ruff check .
 
