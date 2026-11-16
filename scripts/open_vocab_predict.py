@@ -108,7 +108,10 @@ def yolo_world_predictor(
 def owlv2_predictor(weights: str, prompts: list[str], class_names: list[str], device) -> Predictor:
     from transformers import pipeline
 
-    detector = pipeline("zero-shot-object-detection", model=weights, device=device)
+    # Hugging Face accepts device strings such as "cuda:0" and "cpu";
+    # unlike Ultralytics, it does not interpret the CLI value "0" as GPU 0.
+    pipeline_device = f"cuda:{device}" if str(device).isdigit() else device
+    detector = pipeline("zero-shot-object-detection", model=weights, device=pipeline_device)
 
     def predict(path: Path) -> list[dict]:
         with Image.open(path) as opened:

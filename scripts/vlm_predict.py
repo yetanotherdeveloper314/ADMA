@@ -35,11 +35,13 @@ DEFAULT_MODEL = "qwen2.5vl:7b"
 RESIZE_FACTOR = 28
 MIN_PIXELS = 56 * 56
 DEFAULT_MAX_PIXELS = 28 * 28 * 1280
+DEFAULT_MAX_OUTPUT_TOKENS = 2048
 
 PROMPT = (
     "Find every military vehicle in this image. Use only these labels: {labels}. "
     'Reply with JSON only: a list like [{{"bbox_2d": [x1, y1, x2, y2], "label": "tank"}}] '
-    "in pixel coordinates. Reply [] if there are none."
+    "Use coordinates from 0 to 1000 for both axes: [0, 0] is top-left and [1000, 1000] is bottom-right. "
+    "Reply [] if there are none."
 )
 
 
@@ -92,6 +94,20 @@ def rescale_bbox(
     return [x1 * sx, y1 * sy, x2 * sx, y2 * sy]
 
 
+def map_qwen_bbox_to_pixels(
+    bbox: list[float],
+    image_size: tuple[int, int],
+    *,
+    max_pixels: int = DEFAULT_MAX_PIXELS,
+    coordinates_are_resized: bool = False,
+) -> list[float]:
+    """Map normalized 0-1000 boxes (or resized-pixel boxes) to original pixels."""
+    coordinate_size = (1000, 1000)
+    if coordinates_are_resized:
+        coordinate_size = smart_resize(*image_size, max_pixels=max_pixels)
+    return rescale_bbox(bbox, coordinate_size, image_size)
+
+
 def draw_check(path: Path, gt_boxes: list, pred_boxes: list[dict], out_path: Path) -> None:
     """True boxes in green, model boxes in red, so shifted or shrunk boxes stand out."""
     with Image.open(path) as opened:
@@ -107,6 +123,10 @@ def draw_check(path: Path, gt_boxes: list, pred_boxes: list[dict], out_path: Pat
     image.save(out_path)
 
 
+def build_ollama_options(max_output_tokens: int) -> dict[str, int]:
+    return {"temperature": 0, "num_predict": max_output_tokens}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Get Qwen2.5-VL boxes for a dataset split.")
     parser.add_argument("--data", required=True, help="Path to data.yaml")
@@ -119,11 +139,19 @@ def main() -> None:
     parser.add_argument(
         "--rescale-from-resized",
         action="store_true",
-        help="Treat reply coordinates as pixels of Qwen's resized copy and map them back",
+        help="Treat replies as resized-image pixels instead of normalized 0-1000 values",
     )
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=DEFAULT_MAX_OUTPUT_TOKENS,
+        help=f"Maximum generated tokens per image response (default: {DEFAULT_MAX_OUTPUT_TOKENS})",
+    )
     parser.add_argument("--draw", type=int, default=0, help="Draw boxes for the first N images")
     args = parser.parse_args()
+    if args.max_output_tokens < 1:
+        parser.error("--max-output-tokens must be at least 1")
 
     import ollama
 
@@ -148,7 +176,7 @@ def main() -> None:
             reply = ollama.chat(
                 model=args.model,
                 messages=[{"role": "user", "content": prompt, "images": [str(path)]}],
-                options={"temperature": 0},
+                options=build_ollama_options(args.max_output_tokens),
             )["message"]["content"]
             seconds.append(time.perf_counter() - start)
             replies_file.write(json.dumps({"image": image_id, "reply": reply}) + "\n")
@@ -157,12 +185,16 @@ def main() -> None:
             if boxes is None:
                 bad += 1
                 continue
-            if args.rescale_from_resized:
+            if boxes:
                 with Image.open(path) as opened:
                     size = ImageOps.exif_transpose(opened).size
-                resized = smart_resize(*size, max_pixels=args.max_pixels)
                 for box in boxes:
-                    box["bbox"] = rescale_bbox(box["bbox"], resized, size)
+                    box["bbox"] = map_qwen_bbox_to_pixels(
+                        box["bbox"],
+                        size,
+                        max_pixels=args.max_pixels,
+                        coordinates_are_resized=args.rescale_from_resized,
+                    )
             for box in boxes:
                 records.append({"image": image_id, "confidence": 1.0, **box})
             if index < args.draw:

@@ -2,7 +2,13 @@
 
 import unittest
 
-from scripts.vlm_predict import parse_reply, rescale_bbox, smart_resize
+from scripts.vlm_predict import (
+    build_ollama_options,
+    map_qwen_bbox_to_pixels,
+    parse_reply,
+    rescale_bbox,
+    smart_resize,
+)
 
 CLASSES = ["tank", "warship"]
 
@@ -43,6 +49,21 @@ class ResizeTests(unittest.TestCase):
     def test_rescale_maps_resized_pixels_back(self) -> None:
         self.assertEqual(
             rescale_bbox([0, 0, 504, 252], (1008, 504), (2016, 1008)), [0.0, 0.0, 1008.0, 504.0]
+        )
+
+
+class QwenCoordinateTests(unittest.TestCase):
+    def test_normalized_bbox_maps_to_original_image_pixels(self) -> None:
+        self.assertEqual(
+            map_qwen_bbox_to_pixels([100, 200, 500, 800], (640, 480)),
+            [64.0, 96.0, 320.0, 384.0],
+        )
+
+
+class OllamaOptionTests(unittest.TestCase):
+    def test_limits_generated_tokens_for_each_response(self) -> None:
+        self.assertEqual(
+            build_ollama_options(512), {"temperature": 0, "num_predict": 512}
         )
 
 
