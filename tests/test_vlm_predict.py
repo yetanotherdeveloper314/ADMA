@@ -62,9 +62,7 @@ class QwenCoordinateTests(unittest.TestCase):
 
 class OllamaOptionTests(unittest.TestCase):
     def test_limits_generated_tokens_for_each_response(self) -> None:
-        self.assertEqual(
-            build_ollama_options(512), {"temperature": 0, "num_predict": 512}
-        )
+        self.assertEqual(build_ollama_options(512), {"temperature": 0, "num_predict": 512})
 
 
 if __name__ == "__main__":
