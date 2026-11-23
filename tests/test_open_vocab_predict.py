@@ -2,7 +2,7 @@
 
 import unittest
 
-from scripts.open_vocab_predict import build_prompts, latency_stats, owlv2_to_boxes
+from scripts.open_vocab_predict import build_prompts, latency_stats, owlv2_predictor, owlv2_to_boxes
 
 CLASSES = ["military_truck", "tank"]
 
@@ -42,6 +42,28 @@ class LatencyTests(unittest.TestCase):
         self.assertAlmostEqual(stats["mean_ms"], 50.5)
         self.assertAlmostEqual(stats["median_ms"], 50.5)
         self.assertGreater(stats["p95_ms"], 94)
+
+
+class Owlv2DeviceTests(unittest.TestCase):
+    def test_numeric_cli_device_is_converted_for_transformers(self) -> None:
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        called = {}
+
+        def fake_pipeline(task, model, device):
+            called.update(task=task, model=model, device=device)
+            return object()
+
+        fake_transformers = SimpleNamespace(pipeline=fake_pipeline)
+        with patch.dict(sys.modules, {"transformers": fake_transformers}):
+            owlv2_predictor("test-model", [], [], 0)
+
+        self.assertEqual(
+            called,
+            {"task": "zero-shot-object-detection", "model": "test-model", "device": "cuda:0"},
+        )
 
 
 if __name__ == "__main__":
