@@ -41,9 +41,10 @@ LABEL_MAP: dict[str, str | None] = {
     # Tank Images
     "person": None,
     "tank": "tank",
-    "hong-di-chuyen": None,
-    "hong-hoa-luc": None,
-    "hong-hoan-toan": None,
+    # Tank damage-state labels; their boxes mark tanks or damaged tank parts.
+    "hong-di-chuyen": "tank",
+    "hong-hoa-luc": "tank",
+    "hong-hoan-toan": "tank",
     # Military Vehicle Detection
     # This dataset will be excluded from combined training.
     "Vehicle": None,
