@@ -290,7 +290,10 @@ def train(
     workers: int = TRAIN_WORKERS,
     seed: int = DEFAULT_TRAIN_SEED,
 ) -> Path:
-    import mlflow
+    try:
+        import mlflow
+    except ImportError:
+        mlflow = None
 
     resolved_data_yaml = data_yaml.resolve()
     git_commit = _git_commit()
@@ -311,9 +314,21 @@ def train(
     base_model = f"yolov8{model_size}.pt"
     model = YOLO(base_model)
 
+    # MLflow 3 no longer accepts its legacy filesystem store by default. Give
+    # Ultralytics a local SQLite store unless the user selected another URI.
+    previous_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if mlflow is not None and previous_tracking_uri is None:
+        tracking_db = Path(RUNS_DIR).resolve() / "mlflow.db"
+        tracking_db.parent.mkdir(parents=True, exist_ok=True)
+        os.environ["MLFLOW_TRACKING_URI"] = f"sqlite:///{tracking_db}"
+
     def log_training_metadata(trainer) -> None:
+        if mlflow is None:
+            print("[WARN] MLflow is not installed; continuing without run metadata.")
+            return
         if mlflow.active_run() is None:
-            raise RuntimeError("Ultralytics did not start an active MLflow run")
+            print("[WARN] MLflow did not start a run; continuing without run metadata.")
+            return
         mlflow.log_params(
             {
                 "data_yaml": str(resolved_data_yaml),
@@ -369,15 +384,21 @@ def train(
         metrics_path = evaluation_dir / "metrics.json"
         if not metrics_path.is_file():
             raise FileNotFoundError(f"Evaluator did not create the expected report: {metrics_path}")
-        mlflow.log_artifact(str(metrics_path), artifact_path="evaluation")
+        if mlflow is not None and mlflow.active_run() is not None:
+            mlflow.log_artifact(str(metrics_path), artifact_path="evaluation")
     finally:
         try:
-            mlflow.end_run()
+            if mlflow is not None and mlflow.active_run() is not None:
+                mlflow.end_run()
         finally:
             if previous_keep_run_active is None:
                 os.environ.pop("MLFLOW_KEEP_RUN_ACTIVE", None)
             else:
                 os.environ["MLFLOW_KEEP_RUN_ACTIVE"] = previous_keep_run_active
+            if previous_tracking_uri is None:
+                os.environ.pop("MLFLOW_TRACKING_URI", None)
+            else:
+                os.environ["MLFLOW_TRACKING_URI"] = previous_tracking_uri
 
     print()
     print("=" * 60)
